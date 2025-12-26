@@ -22,6 +22,7 @@ mod zion;
 
 use crate::cache::{RedisCache, SubscriptionCache};
 use crate::config::Config;
+use crate::usage::UsageTracker;
 use crate::zion::ZionClient;
 
 /// Application state shared across all request handlers
@@ -32,6 +33,7 @@ pub struct AppState {
     pub start_time: Instant,
     pub zion_client: Arc<ZionClient>,
     pub subscription_cache: Arc<SubscriptionCache>,
+    pub usage_tracker: Arc<UsageTracker>,
 }
 
 impl AppState {
@@ -61,6 +63,9 @@ impl AppState {
             config.jwt_cache_ttl_seconds,
         ));
 
+        // Initialize usage tracker
+        let usage_tracker = Arc::new(UsageTracker::new(zion_client.clone()));
+
         Ok(Self {
             config,
             redis,
@@ -68,6 +73,7 @@ impl AppState {
             start_time: Instant::now(),
             zion_client,
             subscription_cache,
+            usage_tracker,
         })
     }
 }
