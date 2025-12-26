@@ -22,7 +22,7 @@ mod zion;
 
 use crate::cache::{RedisCache, SubscriptionCache};
 use crate::config::Config;
-use crate::usage::UsageTracker;
+use crate::usage::{BatchingUsageTracker, UsageTracker};
 use crate::zion::ZionClient;
 
 /// Application state shared across all request handlers
@@ -33,7 +33,10 @@ pub struct AppState {
     pub start_time: Instant,
     pub zion_client: Arc<ZionClient>,
     pub subscription_cache: Arc<SubscriptionCache>,
+    /// Synchronous usage tracker for immediate tracking (used for streaming)
     pub usage_tracker: Arc<UsageTracker>,
+    /// Batching usage tracker for fire-and-forget tracking (protects Zion from floods)
+    pub batching_tracker: Arc<BatchingUsageTracker>,
 }
 
 impl AppState {
@@ -63,8 +66,14 @@ impl AppState {
             config.jwt_cache_ttl_seconds,
         ));
 
-        // Initialize usage tracker
+        // Initialize usage tracker (synchronous, for streaming)
         let usage_tracker = Arc::new(UsageTracker::new(zion_client.clone()));
+
+        // Initialize batching usage tracker (fire-and-forget, protects Zion)
+        let batching_tracker = Arc::new(BatchingUsageTracker::with_defaults(
+            zion_client.clone(),
+            redis.clone(),
+        ));
 
         Ok(Self {
             config,
@@ -74,6 +83,7 @@ impl AppState {
             zion_client,
             subscription_cache,
             usage_tracker,
+            batching_tracker,
         })
     }
 }

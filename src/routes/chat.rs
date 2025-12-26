@@ -22,7 +22,6 @@ use crate::{
     middleware::auth::AuthenticatedUser,
     proxy::VercelGateway,
     routes::metrics::{record_request, record_tokens},
-    usage::tracker::UsageData,
     AppState,
 };
 
@@ -212,26 +211,12 @@ async fn handle_non_streaming_chat(
         record_tokens("prompt", usage.prompt_tokens as u64, &model);
         record_tokens("completion", usage.completion_tokens as u64, &model);
 
-        // Track usage in Zion
-        let usage_data = UsageData::new(
+        // Track usage in Zion (fire-and-forget, never blocks)
+        state.batching_tracker.track(
+            user.external_id.clone(),
             usage.prompt_tokens as u64,
             usage.completion_tokens as u64,
         );
-
-        if let Err(e) = state
-            .usage_tracker
-            .record_usage_data(&user.external_id, &usage_data)
-            .await
-        {
-            // Log warning but don't fail the request if usage tracking fails
-            warn!(
-                error = %e,
-                external_id = %user.external_id,
-                input_tokens = usage.prompt_tokens,
-                output_tokens = usage.completion_tokens,
-                "Failed to record usage in Zion"
-            );
-        }
     }
 
     info!(
