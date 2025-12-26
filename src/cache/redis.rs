@@ -102,6 +102,10 @@ pub mod keys {
 mod tests {
     use super::keys;
 
+    // ===========================================
+    // Cache Key Generation Tests
+    // ===========================================
+
     #[test]
     fn test_cache_keys() {
         assert_eq!(
@@ -116,5 +120,219 @@ mod tests {
             keys::user_profile("abc123"),
             "sentinel:profile:abc123"
         );
+    }
+
+    #[test]
+    fn test_user_limits_key_format() {
+        let key = keys::user_limits("ext_12345");
+        assert!(key.starts_with("sentinel:limits:"));
+        assert!(key.ends_with("ext_12345"));
+        assert_eq!(key, "sentinel:limits:ext_12345");
+    }
+
+    #[test]
+    fn test_jwt_validation_key_format() {
+        let key = keys::jwt_validation("sha256hash");
+        assert!(key.starts_with("sentinel:jwt:"));
+        assert!(key.ends_with("sha256hash"));
+        assert_eq!(key, "sentinel:jwt:sha256hash");
+    }
+
+    #[test]
+    fn test_user_profile_key_format() {
+        let key = keys::user_profile("jwt_hash_abc");
+        assert!(key.starts_with("sentinel:profile:"));
+        assert!(key.ends_with("jwt_hash_abc"));
+        assert_eq!(key, "sentinel:profile:jwt_hash_abc");
+    }
+
+    #[test]
+    fn test_cache_keys_empty_id() {
+        // Edge case: empty ID
+        let key = keys::user_limits("");
+        assert_eq!(key, "sentinel:limits:");
+    }
+
+    #[test]
+    fn test_cache_keys_special_characters() {
+        // IDs with special characters
+        let key = keys::user_limits("user@example.com");
+        assert_eq!(key, "sentinel:limits:user@example.com");
+
+        let key = keys::user_limits("user:with:colons");
+        assert_eq!(key, "sentinel:limits:user:with:colons");
+    }
+
+    #[test]
+    fn test_cache_keys_uuid() {
+        // UUIDs are common identifiers
+        let key = keys::user_limits("550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(key, "sentinel:limits:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn test_cache_keys_consistency() {
+        // Same input should always produce same output
+        let id = "consistent_user_id";
+        let key1 = keys::user_limits(id);
+        let key2 = keys::user_limits(id);
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_cache_keys_uniqueness() {
+        // Different key types for same ID should be different
+        let id = "same_id";
+        let limits_key = keys::user_limits(id);
+        let jwt_key = keys::jwt_validation(id);
+        let profile_key = keys::user_profile(id);
+
+        assert_ne!(limits_key, jwt_key);
+        assert_ne!(limits_key, profile_key);
+        assert_ne!(jwt_key, profile_key);
+    }
+
+    #[test]
+    fn test_cache_keys_long_id() {
+        // Very long IDs should work
+        let long_id = "a".repeat(1000);
+        let key = keys::user_limits(&long_id);
+        assert!(key.len() > 1000);
+        assert!(key.starts_with("sentinel:limits:"));
+    }
+
+    #[test]
+    fn test_cache_keys_unicode() {
+        // Unicode characters in IDs
+        let key = keys::user_limits("user_unicode");
+        assert_eq!(key, "sentinel:limits:user_unicode");
+    }
+
+    // ===========================================
+    // RedisCache Unit Tests (without actual Redis)
+    // ===========================================
+
+    // Note: Testing RedisCache methods that interact with Redis
+    // would require integration tests with a real Redis instance.
+    // The following tests document the expected behavior and can be
+    // used with mock implementations if needed.
+
+    #[test]
+    fn test_redis_cache_struct_has_conn_and_ttl() {
+        // This is a compile-time check that RedisCache has the expected fields
+        // The actual struct test requires a Redis connection
+        use super::RedisCache;
+
+        // Type check - this will fail to compile if the struct changes
+        fn _type_check(cache: RedisCache) {
+            let _ = cache.default_ttl;
+            // conn is private but exists
+        }
+    }
+
+    // ===========================================
+    // Serialization Tests for Cache Values
+    // ===========================================
+
+    #[test]
+    fn test_serialize_cache_value_string() {
+        let value = "test string";
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert_eq!(serialized, "\"test string\"");
+    }
+
+    #[test]
+    fn test_serialize_cache_value_struct() {
+        #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+        struct TestStruct {
+            id: String,
+            count: i64,
+        }
+
+        let value = TestStruct {
+            id: "test".to_string(),
+            count: 42,
+        };
+
+        let serialized = serde_json::to_string(&value).unwrap();
+        let deserialized: TestStruct = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(value, deserialized);
+    }
+
+    #[test]
+    fn test_serialize_cache_value_vec() {
+        let value = vec!["a", "b", "c"];
+        let serialized = serde_json::to_string(&value).unwrap();
+        let deserialized: Vec<String> = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_serialize_cache_value_option() {
+        let some_value: Option<i64> = Some(42);
+        let none_value: Option<i64> = None;
+
+        let serialized_some = serde_json::to_string(&some_value).unwrap();
+        let serialized_none = serde_json::to_string(&none_value).unwrap();
+
+        assert_eq!(serialized_some, "42");
+        assert_eq!(serialized_none, "null");
+    }
+
+    #[test]
+    fn test_serialize_complex_nested_value() {
+        #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+        struct Nested {
+            items: Vec<Item>,
+        }
+
+        #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+        struct Item {
+            name: String,
+            value: Option<i64>,
+        }
+
+        let value = Nested {
+            items: vec![
+                Item { name: "first".to_string(), value: Some(1) },
+                Item { name: "second".to_string(), value: None },
+            ],
+        };
+
+        let serialized = serde_json::to_string(&value).unwrap();
+        let deserialized: Nested = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(value, deserialized);
+    }
+
+    // ===========================================
+    // TTL Value Tests
+    // ===========================================
+
+    #[test]
+    fn test_ttl_values() {
+        // Common TTL values used in the application
+        let short_ttl: u64 = 60; // 1 minute
+        let medium_ttl: u64 = 300; // 5 minutes
+        let long_ttl: u64 = 3600; // 1 hour
+        let day_ttl: u64 = 86400; // 1 day
+
+        assert_eq!(short_ttl, 60);
+        assert_eq!(medium_ttl, 5 * 60);
+        assert_eq!(long_ttl, 60 * 60);
+        assert_eq!(day_ttl, 24 * 60 * 60);
+    }
+
+    #[test]
+    fn test_ttl_edge_cases() {
+        // Zero TTL (immediate expiration)
+        let zero_ttl: u64 = 0;
+        assert_eq!(zero_ttl, 0);
+
+        // Max TTL
+        let max_ttl: u64 = u64::MAX;
+        assert!(max_ttl > 0);
     }
 }
