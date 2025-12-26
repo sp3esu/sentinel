@@ -1,0 +1,82 @@
+# =============================================================================
+# Sentinel AI Proxy - Docker Compose Development Configuration
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Sentinel AI Proxy Service
+  # ---------------------------------------------------------------------------
+  sentinel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sentinel-proxy
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # Mount source code for development (requires cargo-watch for hot reload)
+      - ./src:/app/src:ro
+      - ./Cargo.toml:/app/Cargo.toml:ro
+      - ./Cargo.lock:/app/Cargo.lock:ro
+      # Cache cargo registry and build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+    networks:
+      - sentinel-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Redis Service (Caching & Rate Limiting)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      # Persist Redis data
+      - redis-data:/data
+    command: redis-server --appendonly yes --appendfsync everysec
+    networks:
+      - sentinel-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+# -----------------------------------------------------------------------------
+# Networks
+# -----------------------------------------------------------------------------
+networks:
+  sentinel-network:
+    driver: bridge
+
+# -----------------------------------------------------------------------------
+# Volumes
+# -----------------------------------------------------------------------------
+volumes:
+  redis-data:
+    driver: local
+  cargo-cache:
+    driver: local
+  target-cache:
+    driver: local

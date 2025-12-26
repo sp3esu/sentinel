@@ -1,0 +1,57 @@
+# =============================================================================
+# Docker Ignore File for Sentinel AI Proxy
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+target/
+debug/
+*.pdb
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation
+*.md
+docs/
+LICENSE
+
+# Test files
+tests/
+*.test.rs
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Docker files (avoid copying Docker files into the image)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Environment files (should be passed at runtime)
+.env*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Coverage reports
+coverage/
+*.lcov
