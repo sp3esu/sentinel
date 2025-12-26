@@ -19,8 +19,10 @@ use tracing::{info, warn};
 
 use crate::{
     error::AppError,
+    middleware::auth::AuthenticatedUser,
     proxy::VercelGateway,
     routes::metrics::{record_request, record_tokens},
+    usage::tracker::UsageData,
     AppState,
 };
 
@@ -139,20 +141,39 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<ChatCompletionRequest>,
+    request: axum::extract::Request,
 ) -> Result<Response, AppError> {
     let start_time = Instant::now();
-    let model = request.model.clone();
-    let is_streaming = request.stream;
 
-    // Extract authorization token (Phase 3 will validate it)
+    // Extract authenticated user from request extensions (set by auth middleware)
+    let user = request
+        .extensions()
+        .get::<AuthenticatedUser>()
+        .cloned()
+        .ok_or_else(|| {
+            warn!("AuthenticatedUser not found in request extensions");
+            AppError::Unauthorized
+        })?;
+
+    // Parse the request body
+    let body = axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read request body: {}", e)))?;
+
+    let chat_request: ChatCompletionRequest = serde_json::from_slice(&body)
+        .map_err(|e| AppError::BadRequest(format!("Invalid request body: {}", e)))?;
+
+    let model = chat_request.model.clone();
+    let is_streaming = chat_request.stream;
+
+    // Extract authorization token (kept for potential future use)
     let _token = extract_bearer_token(&headers);
-    // TODO: Phase 3 - Validate JWT and check user quota
 
     info!(
         model = %model,
         stream = %is_streaming,
-        messages = %request.messages.len(),
+        messages = %chat_request.messages.len(),
+        external_id = %user.external_id,
         "Processing chat completion request"
     );
 
@@ -161,19 +182,25 @@ pub async fn chat_completions(
 
     if is_streaming {
         // Handle streaming response
-        handle_streaming_chat(gateway, request, model, start_time).await
+        // TODO: Streaming token tracking - The OpenAI API can return usage in the final chunk
+        // if `stream_options.include_usage=true`. We should parse the final chunk to extract
+        // usage data and call state.usage_tracker.record_usage_data() after stream completes.
+        // For now, streaming requests don't track token usage.
+        handle_streaming_chat(gateway, chat_request, model, start_time).await
     } else {
         // Handle non-streaming response
-        handle_non_streaming_chat(gateway, request, model, start_time).await
+        handle_non_streaming_chat(state, gateway, chat_request, model, start_time, user).await
     }
 }
 
 /// Handle non-streaming chat completion
 async fn handle_non_streaming_chat(
+    state: Arc<AppState>,
     gateway: VercelGateway,
     request: ChatCompletionRequest,
     model: String,
     start_time: Instant,
+    user: AuthenticatedUser,
 ) -> Result<Response, AppError> {
     let response: ChatCompletionResponse = gateway.chat_completions(&request).await?;
 
@@ -184,11 +211,33 @@ async fn handle_non_streaming_chat(
     if let Some(ref usage) = response.usage {
         record_tokens("prompt", usage.prompt_tokens as u64, &model);
         record_tokens("completion", usage.completion_tokens as u64, &model);
+
+        // Track usage in Zion
+        let usage_data = UsageData::new(
+            usage.prompt_tokens as u64,
+            usage.completion_tokens as u64,
+        );
+
+        if let Err(e) = state
+            .usage_tracker
+            .record_usage_data(&user.external_id, &usage_data)
+            .await
+        {
+            // Log warning but don't fail the request if usage tracking fails
+            warn!(
+                error = %e,
+                external_id = %user.external_id,
+                input_tokens = usage.prompt_tokens,
+                output_tokens = usage.completion_tokens,
+                "Failed to record usage in Zion"
+            );
+        }
     }
 
     info!(
         model = %model,
         duration_ms = %format!("{:.2}", duration * 1000.0),
+        external_id = %user.external_id,
         "Chat completion request completed"
     );
 
