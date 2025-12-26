@@ -4,4 +4,4 @@
 
 pub mod counter;
 
-pub use counter::TokenCounter;
+pub use counter::{SharedTokenCounter, TokenCounter};

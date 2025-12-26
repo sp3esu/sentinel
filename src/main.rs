@@ -20,7 +20,9 @@ mod tokens;
 mod usage;
 mod zion;
 
+use crate::cache::{RedisCache, SubscriptionCache};
 use crate::config::Config;
+use crate::zion::ZionClient;
 
 /// Application state shared across all request handlers
 pub struct AppState {
@@ -28,6 +30,8 @@ pub struct AppState {
     pub redis: redis::aio::ConnectionManager,
     pub http_client: reqwest::Client,
     pub start_time: Instant,
+    pub zion_client: Arc<ZionClient>,
+    pub subscription_cache: Arc<SubscriptionCache>,
 }
 
 impl AppState {
@@ -43,11 +47,27 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(300))
             .build()?;
 
+        // Initialize Zion client
+        let zion_client = Arc::new(ZionClient::new(http_client.clone(), &config));
+
+        // Initialize Redis cache
+        let redis_cache = Arc::new(RedisCache::new(redis.clone(), config.cache_ttl_seconds));
+
+        // Initialize subscription cache
+        let subscription_cache = Arc::new(SubscriptionCache::new(
+            redis_cache,
+            zion_client.clone(),
+            config.cache_ttl_seconds,
+            config.jwt_cache_ttl_seconds,
+        ));
+
         Ok(Self {
             config,
             redis,
             http_client,
             start_time: Instant::now(),
+            zion_client,
+            subscription_cache,
         })
     }
 }
@@ -72,6 +92,10 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = Config::from_env()?;
     info!("Configuration loaded successfully");
+
+    // Initialize metrics
+    routes::metrics::init_metrics();
+    info!("Metrics initialized");
 
     // Initialize application state
     let state = Arc::new(AppState::new(config.clone()).await?);

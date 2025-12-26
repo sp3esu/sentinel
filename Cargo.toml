@@ -49,6 +49,7 @@ metrics-exporter-prometheus = "0.13"
 # Async utilities
 futures = "0.3"
 async-trait = "0.1"
+bytes = "1"
 
 # Sync primitives
 once_cell = "1"

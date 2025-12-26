@@ -5,7 +5,7 @@
 use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 
 /// Redis cache wrapper
 pub struct RedisCache {
@@ -47,14 +47,14 @@ impl RedisCache {
     ) -> AppResult<()> {
         let mut conn = self.conn.clone();
         let serialized = serde_json::to_string(value)?;
-        conn.set_ex(key, serialized, ttl_seconds).await?;
+        let _: () = conn.set_ex(key, serialized, ttl_seconds).await?;
         Ok(())
     }
 
     /// Delete a key from cache
     pub async fn delete(&self, key: &str) -> AppResult<()> {
         let mut conn = self.conn.clone();
-        conn.del(key).await?;
+        let _: () = conn.del(key).await?;
         Ok(())
     }
 
@@ -75,7 +75,7 @@ impl RedisCache {
     /// Set expiry on a key
     pub async fn expire(&self, key: &str, seconds: u64) -> AppResult<()> {
         let mut conn = self.conn.clone();
-        conn.expire(key, seconds as i64).await?;
+        let _: () = conn.expire(key, seconds as i64).await?;
         Ok(())
     }
 }

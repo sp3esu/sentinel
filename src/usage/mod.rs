@@ -4,4 +4,4 @@
 
 pub mod tracker;
 
-pub use tracker::UsageTracker;
+pub use tracker::{limits, BatchIncrementItem, UsageData, UsageTracker};

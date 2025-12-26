@@ -2,10 +2,11 @@
 //!
 //! Handles request forwarding to Vercel's AI Gateway service.
 
-use std::sync::Arc;
-
+use bytes::Bytes;
+use futures::Stream;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{de::DeserializeOwned, Serialize};
+use std::pin::Pin;
 
 use crate::{config::Config, error::AppResult};
 
@@ -26,7 +27,7 @@ impl VercelGateway {
         }
     }
 
-    /// Forward a chat completion request
+    /// Forward a chat completion request (non-streaming)
     pub async fn chat_completions<T: Serialize, R: DeserializeOwned>(
         &self,
         request: &T,
@@ -35,7 +36,16 @@ impl VercelGateway {
         self.post(&url, request).await
     }
 
-    /// Forward a completion request
+    /// Forward a chat completion request with streaming response
+    pub async fn chat_completions_stream<T: Serialize>(
+        &self,
+        request: &T,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>> {
+        let url = format!("{}/chat/completions", self.base_url);
+        self.post_stream(&url, request).await
+    }
+
+    /// Forward a completion request (non-streaming)
     pub async fn completions<T: Serialize, R: DeserializeOwned>(
         &self,
         request: &T,
@@ -44,13 +54,22 @@ impl VercelGateway {
         self.post(&url, request).await
     }
 
+    /// Forward a completion request with streaming response
+    pub async fn completions_stream<T: Serialize>(
+        &self,
+        request: &T,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>> {
+        let url = format!("{}/completions", self.base_url);
+        self.post_stream(&url, request).await
+    }
+
     /// List available models
     pub async fn list_models<R: DeserializeOwned>(&self) -> AppResult<R> {
         let url = format!("{}/models", self.base_url);
         self.get(&url).await
     }
 
-    /// Make a POST request to the gateway
+    /// Make a POST request to the gateway (non-streaming)
     async fn post<T: Serialize, R: DeserializeOwned>(
         &self,
         url: &str,
@@ -75,6 +94,33 @@ impl VercelGateway {
 
         let result = response.json().await?;
         Ok(result)
+    }
+
+    /// Make a POST request to the gateway with streaming response
+    async fn post_stream<T: Serialize>(
+        &self,
+        url: &str,
+        body: &T,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>> {
+        let response = self
+            .client
+            .post(url)
+            .headers(self.default_headers())
+            .json(body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(crate::error::AppError::UpstreamError(format!(
+                "Vercel Gateway error {}: {}",
+                status, text
+            )));
+        }
+
+        // Return the byte stream
+        Ok(Box::pin(response.bytes_stream()))
     }
 
     /// Make a GET request to the gateway

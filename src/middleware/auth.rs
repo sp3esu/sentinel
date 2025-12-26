@@ -6,11 +6,12 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Request, State},
-    http::{header, StatusCode},
+    http::header,
     middleware::Next,
     response::Response,
 };
 use sha2::{Digest, Sha256};
+use tracing::{debug, instrument, warn};
 
 use crate::{error::AppError, AppState};
 
@@ -48,8 +49,9 @@ pub fn hash_jwt(jwt: &str) -> String {
 /// 3. If not cached, validates with Zion API
 /// 4. Caches successful validation
 /// 5. Adds AuthenticatedUser to request extensions
+#[instrument(skip_all, fields(path = %request.uri().path()))]
 pub async fn auth_middleware(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
@@ -64,21 +66,35 @@ pub async fn auth_middleware(
     let token = extract_bearer_token(auth_header).ok_or(AppError::InvalidToken)?;
 
     // Hash the token for cache lookup
-    let _token_hash = hash_jwt(token);
+    let token_hash = hash_jwt(token);
+    debug!(token_hash = %token_hash, "Processing authentication request");
 
-    // TODO: Phase 3 - Implement full JWT validation:
-    // 1. Check cache for existing validation
-    // 2. If miss, call Zion /api/v1/users/me with the JWT
-    // 3. Cache the result
-    // 4. Extract user info and add to extensions
-
-    // Placeholder for Phase 1 - just pass through
-    let user = AuthenticatedUser {
-        user_id: "placeholder".to_string(),
-        external_id: "placeholder".to_string(),
-        email: "placeholder@example.com".to_string(),
+    // Validate JWT using the subscription cache
+    let profile = match state.subscription_cache.validate_jwt(token, &token_hash).await {
+        Ok(profile) => profile,
+        Err(e) => {
+            warn!(error = %e, "JWT validation failed");
+            return Err(e);
+        }
     };
 
+    // Extract external_id, defaulting to user_id if not set
+    let external_id = profile.external_id.clone().unwrap_or_else(|| profile.id.clone());
+
+    // Create authenticated user from profile
+    let user = AuthenticatedUser {
+        user_id: profile.id,
+        external_id,
+        email: profile.email,
+    };
+
+    debug!(
+        user_id = %user.user_id,
+        external_id = %user.external_id,
+        "User authenticated successfully"
+    );
+
+    // Add authenticated user to request extensions
     request.extensions_mut().insert(user);
 
     Ok(next.run(request).await)
