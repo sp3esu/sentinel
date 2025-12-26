@@ -1,6 +1,19 @@
 # =============================================================================
 # Sentinel AI Proxy - Docker Compose Development Configuration
 # =============================================================================
+#
+# This configuration is designed to run alongside other Docker environments
+# (e.g., Zion). Use configurable ports and external networks.
+#
+# Usage:
+#   docker-compose up -d              # Start Sentinel with its own Redis
+#   docker-compose --profile dev up   # Include dev tools
+#
+# To connect to Zion running in another docker-compose:
+#   1. Set ZION_API_URL=http://host.docker.internal:3000 in .env
+#   2. Or join Zion's network (see EXTERNAL_NETWORK below)
+#
+# =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
@@ -12,17 +25,21 @@ services:
       dockerfile: Dockerfile
     container_name: sentinel-proxy
     ports:
-      - "8080:8080"
+      - "${SENTINEL_PORT:-8080}:8080"
     environment:
-      - RUST_LOG=${RUST_LOG:-info}
+      - RUST_LOG=${RUST_LOG:-sentinel=info,tower_http=info}
       - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
-      - REDIS_URL=redis://redis:6379
-      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - REDIS_URL=redis://sentinel-redis:6379
+      - SENTINEL_HOST=0.0.0.0
+      - SENTINEL_PORT=8080
     env_file:
       - .env
     depends_on:
-      redis:
+      sentinel-redis:
         condition: service_healthy
+    extra_hosts:
+      # Allow connecting to services on host machine (e.g., Zion)
+      - "host.docker.internal:host-gateway"
     volumes:
       # Mount source code for development (requires cargo-watch for hot reload)
       - ./src:/app/src:ro
@@ -44,14 +61,15 @@ services:
   # ---------------------------------------------------------------------------
   # Redis Service (Caching & Rate Limiting)
   # ---------------------------------------------------------------------------
-  redis:
+  # Uses port 6380 by default to avoid conflicts with other Redis instances
+  sentinel-redis:
     image: redis:7-alpine
     container_name: sentinel-redis
     ports:
-      - "6379:6379"
+      - "${SENTINEL_REDIS_PORT:-6380}:6379"
     volumes:
       # Persist Redis data
-      - redis-data:/data
+      - sentinel-redis-data:/data
     command: redis-server --appendonly yes --appendfsync everysec
     networks:
       - sentinel-network
@@ -69,12 +87,17 @@ services:
 networks:
   sentinel-network:
     driver: bridge
+    name: sentinel-network
+  # Uncomment to join an external network (e.g., Zion's network)
+  # external-network:
+  #   external: true
+  #   name: ${EXTERNAL_NETWORK:-zion_default}
 
 # -----------------------------------------------------------------------------
 # Volumes
 # -----------------------------------------------------------------------------
 volumes:
-  redis-data:
+  sentinel-redis-data:
     driver: local
   cargo-cache:
     driver: local

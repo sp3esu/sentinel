@@ -91,19 +91,50 @@ setup_env() {
 start_redis() {
     echo -n "Starting Redis... "
 
-    # Check if Redis is already running
+    # Parse port from REDIS_URL (default 6379)
+    REDIS_PORT=$(echo "${REDIS_URL:-redis://localhost:6379}" | sed -n 's/.*:\([0-9]*\)$/\1/p')
+    REDIS_PORT=${REDIS_PORT:-6379}
+
+    # Check if Redis is already running on the expected port
     if docker ps -q --filter "name=sentinel-redis" | grep -q .; then
-        echo -e "${GREEN}Already running${NC}"
-        return
+        # Verify it's on the right port
+        RUNNING_PORT=$(docker port sentinel-redis 6379/tcp 2>/dev/null | cut -d: -f2)
+        if [ "$RUNNING_PORT" = "$REDIS_PORT" ]; then
+            echo -e "${GREEN}Already running on port ${REDIS_PORT}${NC}"
+            return
+        else
+            echo -e "${YELLOW}Running on wrong port, restarting...${NC}"
+            docker stop sentinel-redis >/dev/null 2>&1 || true
+            docker rm sentinel-redis >/dev/null 2>&1 || true
+        fi
     fi
 
     # Remove stopped container if exists
     docker rm sentinel-redis >/dev/null 2>&1 || true
 
+    # Check if port is already in use by another service
+    if lsof -i :${REDIS_PORT} >/dev/null 2>&1; then
+        echo -e "${YELLOW}Port ${REDIS_PORT} already in use${NC}"
+        echo "Checking if it's a Redis instance..."
+
+        # Try to ping existing Redis
+        if docker run --rm --network host redis:7-alpine redis-cli -p ${REDIS_PORT} ping >/dev/null 2>&1; then
+            echo -e "${GREEN}Using existing Redis on port ${REDIS_PORT}${NC}"
+            return
+        else
+            echo -e "${RED}Port ${REDIS_PORT} is in use but not by Redis${NC}"
+            echo "Options:"
+            echo "  1. Stop the service using port ${REDIS_PORT}"
+            echo "  2. Set REDIS_URL=redis://localhost:6380 in .env and restart"
+            exit 1
+        fi
+    fi
+
     # Start Redis container
+    echo -n "(port ${REDIS_PORT}) "
     docker run -d \
         --name sentinel-redis \
-        -p 6379:6379 \
+        -p ${REDIS_PORT}:6379 \
         redis:7-alpine \
         >/dev/null 2>&1
 
