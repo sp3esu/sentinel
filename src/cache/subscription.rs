@@ -151,17 +151,18 @@ impl SubscriptionCache {
     ///
     /// This helper method increments usage via Zion and then invalidates
     /// the cached limits to ensure fresh data on next request.
-    #[instrument(skip(self), fields(external_id = %external_id, limit_name = %limit_name, amount = %amount))]
+    #[instrument(skip(self), fields(external_id = %external_id, input_tokens = input_tokens, output_tokens = output_tokens, requests = requests))]
     pub async fn increment_usage(
         &self,
         external_id: &str,
-        limit_name: &str,
-        amount: i64,
+        input_tokens: i64,
+        output_tokens: i64,
+        requests: i64,
     ) -> AppResult<UserLimit> {
         // Increment via Zion API
         let updated_limit = self
             .zion_client
-            .increment_usage(external_id, limit_name, amount)
+            .increment_usage(external_id, input_tokens, output_tokens, requests)
             .await?;
 
         // Invalidate cached limits

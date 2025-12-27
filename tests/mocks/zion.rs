@@ -2,7 +2,8 @@
 //!
 //! Provides wiremock-based mocks for the Zion API endpoints:
 //! - GET /api/v1/limits/external/{id} - Get user limits
-//! - POST /api/v1/usage/external/increment - Increment usage
+//! - POST /api/v1/usage/external/increment - Increment usage (unified format)
+//! - POST /api/v1/usage/external/batch-increment - Batch increment usage
 //! - GET /api/v1/users/me - Get user profile
 //!
 //! # Example
@@ -14,7 +15,7 @@
 //! async fn test_with_zion_mock() {
 //!     let mock_server = MockZionServer::start().await;
 //!
-//!     // Set up successful limits response
+//!     // Set up successful limits response with unified ai_usage limit
 //!     mock_server.mock_get_limits_success("user123", ZionTestData::default_limits()).await;
 //!
 //!     // Use mock_server.uri() as the Zion API URL
@@ -24,7 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 use wiremock::{
-    matchers::{body_json, header, header_exists, method, path, path_regex},
+    matchers::{header, header_exists, method, path, path_regex},
     Mock, MockServer, ResponseTemplate,
 };
 
@@ -128,7 +129,7 @@ impl MockZionServer {
     // POST /api/v1/usage/external/increment - Increment Usage
     // =========================================================================
 
-    /// Mock successful increment usage response
+    /// Mock successful increment usage response (unified format)
     pub async fn mock_increment_usage_success(&self, updated_limit: UserLimitMock) {
         let response = IncrementUsageResponseMock {
             success: true,
@@ -137,35 +138,8 @@ impl MockZionServer {
 
         Mock::given(method("POST"))
             .and(path("/api/v1/usage/external/increment"))
-            .and(header_exists("Authorization"))
+            .and(header_exists("x-api-key"))
             .and(header("Content-Type", "application/json"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
-            .mount(&self.server)
-            .await;
-    }
-
-    /// Mock increment usage with specific request matching
-    pub async fn mock_increment_usage_for_request(
-        &self,
-        external_id: &str,
-        limit_name: &str,
-        updated_limit: UserLimitMock,
-    ) {
-        let request = IncrementUsageRequestMock {
-            external_id: external_id.to_string(),
-            limit_name: limit_name.to_string(),
-            amount: None,
-        };
-
-        let response = IncrementUsageResponseMock {
-            success: true,
-            data: updated_limit,
-        };
-
-        Mock::given(method("POST"))
-            .and(path("/api/v1/usage/external/increment"))
-            .and(header_exists("Authorization"))
-            .and(body_json(&request))
             .respond_with(ResponseTemplate::new(200).set_body_json(&response))
             .mount(&self.server)
             .await;
@@ -231,6 +205,79 @@ impl MockZionServer {
 
         Mock::given(method("POST"))
             .and(path("/api/v1/usage/external/increment"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(&response))
+            .mount(&self.server)
+            .await;
+    }
+
+    // =========================================================================
+    // POST /api/v1/usage/external/batch-increment - Batch Increment Usage
+    // =========================================================================
+
+    /// Mock successful batch increment response
+    pub async fn mock_batch_increment_success(&self, processed: i32, failed: i32) {
+        let response = BatchIncrementResponseMock {
+            success: true,
+            data: BatchIncrementDataMock {
+                processed,
+                failed,
+                results: vec![],
+            },
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/usage/external/batch-increment"))
+            .and(header_exists("x-api-key"))
+            .and(header("Content-Type", "application/json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Mock batch increment with partial failures
+    pub async fn mock_batch_increment_partial_failure(
+        &self,
+        processed: i32,
+        failed: i32,
+        failed_external_ids: Vec<&str>,
+    ) {
+        let results: Vec<BatchIncrementResultMock> = failed_external_ids
+            .into_iter()
+            .map(|id| BatchIncrementResultMock {
+                external_id: id.to_string(),
+                success: false,
+                error: Some("Failed to increment".to_string()),
+            })
+            .collect();
+
+        let response = BatchIncrementResponseMock {
+            success: true,
+            data: BatchIncrementDataMock {
+                processed,
+                failed,
+                results,
+            },
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/usage/external/batch-increment"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Mock 500 Internal Server Error for batch increment
+    pub async fn mock_batch_increment_server_error(&self) {
+        let response = ErrorResponseMock {
+            success: false,
+            error: ErrorDetailMock {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "Failed to process batch increment".to_string(),
+            },
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/api/v1/usage/external/batch-increment"))
             .respond_with(ResponseTemplate::new(500).set_body_json(&response))
             .mount(&self.server)
             .await;
@@ -304,18 +351,38 @@ pub enum ResetPeriodMock {
     Never,
 }
 
-/// User limit mock data
+/// Limit metric mock data (for unified limit structure)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UserLimitMock {
-    pub limit_id: String,
-    pub name: String,
-    pub display_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unit: Option<String>,
+pub struct LimitMetricMock {
     pub limit: i64,
     pub used: i64,
     pub remaining: i64,
+}
+
+impl LimitMetricMock {
+    pub fn new(limit: i64, used: i64) -> Self {
+        Self {
+            limit,
+            used,
+            remaining: limit - used,
+        }
+    }
+}
+
+/// User limit mock data (unified structure with embedded metrics)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserLimitMock {
+    pub name: String,
+    pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    pub ai_input_tokens: LimitMetricMock,
+    pub ai_output_tokens: LimitMetricMock,
+    pub ai_requests: LimitMetricMock,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reset_period: Option<ResetPeriodMock>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -341,14 +408,18 @@ pub struct ExternalLimitsResponseMock {
     pub data: ExternalLimitsDataMock,
 }
 
-/// Increment usage request
+/// Increment usage request (unified format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncrementUsageRequestMock {
     pub external_id: String,
     pub limit_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub amount: Option<i64>,
+    pub ai_input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_requests: Option<i64>,
 }
 
 /// Increment usage response
@@ -357,6 +428,54 @@ pub struct IncrementUsageRequestMock {
 pub struct IncrementUsageResponseMock {
     pub success: bool,
     pub data: UserLimitMock,
+}
+
+/// Batch increment item
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementItemMock {
+    pub external_id: String,
+    pub limit_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_requests: Option<i64>,
+}
+
+/// Batch increment request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementRequestMock {
+    pub increments: Vec<BatchIncrementItemMock>,
+}
+
+/// Batch increment result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementResultMock {
+    pub external_id: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Batch increment data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementDataMock {
+    pub processed: i32,
+    pub failed: i32,
+    pub results: Vec<BatchIncrementResultMock>,
+}
+
+/// Batch increment response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementResponseMock {
+    pub success: bool,
+    pub data: BatchIncrementDataMock,
 }
 
 /// User profile mock data
@@ -405,88 +524,75 @@ pub struct ErrorResponseMock {
 pub struct ZionTestData;
 
 impl ZionTestData {
-    /// Create a default user limit for AI input tokens
-    pub fn input_tokens_limit(used: i64, limit: i64) -> UserLimitMock {
+    /// Create a unified AI usage limit with custom values
+    pub fn ai_usage_limit(
+        input_used: i64,
+        input_limit: i64,
+        output_used: i64,
+        output_limit: i64,
+        requests_used: i64,
+        requests_limit: i64,
+    ) -> UserLimitMock {
         UserLimitMock {
-            limit_id: "lmt_input_tokens_001".to_string(),
-            name: "ai_input_tokens".to_string(),
-            display_name: "AI Input Tokens".to_string(),
-            unit: Some("tokens".to_string()),
-            limit,
-            used,
-            remaining: limit - used,
+            name: "ai_usage".to_string(),
+            display_name: "AI Usage".to_string(),
+            description: Some("AI usage limits for input tokens, output tokens, and requests".to_string()),
+            unit: None,
+            ai_input_tokens: LimitMetricMock::new(input_limit, input_used),
+            ai_output_tokens: LimitMetricMock::new(output_limit, output_used),
+            ai_requests: LimitMetricMock::new(requests_limit, requests_used),
             reset_period: Some(ResetPeriodMock::Monthly),
             period_start: Some("2024-01-01T00:00:00Z".to_string()),
             period_end: Some("2024-01-31T23:59:59Z".to_string()),
         }
     }
 
-    /// Create a default user limit for AI output tokens
-    pub fn output_tokens_limit(used: i64, limit: i64) -> UserLimitMock {
-        UserLimitMock {
-            limit_id: "lmt_output_tokens_001".to_string(),
-            name: "ai_output_tokens".to_string(),
-            display_name: "AI Output Tokens".to_string(),
-            unit: Some("tokens".to_string()),
-            limit,
-            used,
-            remaining: limit - used,
-            reset_period: Some(ResetPeriodMock::Monthly),
-            period_start: Some("2024-01-01T00:00:00Z".to_string()),
-            period_end: Some("2024-01-31T23:59:59Z".to_string()),
-        }
-    }
-
-    /// Create a default user limit for API requests
-    pub fn api_requests_limit(used: i64, limit: i64) -> UserLimitMock {
-        UserLimitMock {
-            limit_id: "lmt_api_requests_001".to_string(),
-            name: "api_requests".to_string(),
-            display_name: "API Requests".to_string(),
-            unit: Some("requests".to_string()),
-            limit,
-            used,
-            remaining: limit - used,
-            reset_period: Some(ResetPeriodMock::Daily),
-            period_start: Some("2024-01-15T00:00:00Z".to_string()),
-            period_end: Some("2024-01-15T23:59:59Z".to_string()),
-        }
-    }
-
-    /// Create default limits for a typical free tier user
+    /// Create default limits for a typical free tier user (single unified limit)
     pub fn free_tier_limits() -> Vec<UserLimitMock> {
-        vec![
-            Self::input_tokens_limit(5000, 50000),
-            Self::output_tokens_limit(2000, 20000),
-            Self::api_requests_limit(50, 100),
-        ]
+        vec![Self::ai_usage_limit(
+            5000,   // input_used
+            50000,  // input_limit
+            2000,   // output_used
+            20000,  // output_limit
+            50,     // requests_used
+            100,    // requests_limit
+        )]
     }
 
-    /// Create default limits for a typical pro tier user
+    /// Create default limits for a typical pro tier user (single unified limit)
     pub fn pro_tier_limits() -> Vec<UserLimitMock> {
-        vec![
-            Self::input_tokens_limit(100000, 1000000),
-            Self::output_tokens_limit(50000, 500000),
-            Self::api_requests_limit(500, 10000),
-        ]
+        vec![Self::ai_usage_limit(
+            100000,   // input_used
+            1000000,  // input_limit
+            50000,    // output_used
+            500000,   // output_limit
+            500,      // requests_used
+            10000,    // requests_limit
+        )]
     }
 
     /// Create limits where tokens are almost exhausted
     pub fn nearly_exhausted_limits() -> Vec<UserLimitMock> {
-        vec![
-            Self::input_tokens_limit(49900, 50000),
-            Self::output_tokens_limit(19900, 20000),
-            Self::api_requests_limit(99, 100),
-        ]
+        vec![Self::ai_usage_limit(
+            49900,  // input_used
+            50000,  // input_limit
+            19900,  // output_used
+            20000,  // output_limit
+            99,     // requests_used
+            100,    // requests_limit
+        )]
     }
 
     /// Create limits that are completely exhausted
     pub fn exhausted_limits() -> Vec<UserLimitMock> {
-        vec![
-            Self::input_tokens_limit(50000, 50000),
-            Self::output_tokens_limit(20000, 20000),
-            Self::api_requests_limit(100, 100),
-        ]
+        vec![Self::ai_usage_limit(
+            50000,  // input_used
+            50000,  // input_limit
+            20000,  // output_used
+            20000,  // output_limit
+            100,    // requests_used
+            100,    // requests_limit
+        )]
     }
 
     /// Create a default user profile
@@ -544,7 +650,9 @@ mod tests {
         let body: ExternalLimitsResponseMock = response.json().await.unwrap();
         assert!(body.success);
         assert_eq!(body.data.external_id, "user123");
-        assert_eq!(body.data.limits.len(), 3);
+        // Now we have a single unified ai_usage limit
+        assert_eq!(body.data.limits.len(), 1);
+        assert_eq!(body.data.limits[0].name, "ai_usage");
     }
 
     #[tokio::test]
@@ -568,13 +676,44 @@ mod tests {
     #[tokio::test]
     async fn test_test_data_factories() {
         let free_limits = ZionTestData::free_tier_limits();
-        assert_eq!(free_limits.len(), 3);
-        assert_eq!(free_limits[0].name, "ai_input_tokens");
+        // Now we have a single unified limit
+        assert_eq!(free_limits.len(), 1);
+        assert_eq!(free_limits[0].name, "ai_usage");
+        // Verify the embedded metrics
+        assert_eq!(free_limits[0].ai_input_tokens.limit, 50000);
+        assert_eq!(free_limits[0].ai_output_tokens.limit, 20000);
+        assert_eq!(free_limits[0].ai_requests.limit, 100);
 
         let exhausted = ZionTestData::exhausted_limits();
-        assert!(exhausted.iter().all(|l| l.remaining == 0));
+        assert_eq!(exhausted.len(), 1);
+        assert_eq!(exhausted[0].ai_input_tokens.remaining, 0);
+        assert_eq!(exhausted[0].ai_output_tokens.remaining, 0);
+        assert_eq!(exhausted[0].ai_requests.remaining, 0);
 
         let profile = ZionTestData::default_profile("test123");
         assert_eq!(profile.external_id, Some("test123".to_string()));
+    }
+
+    #[test]
+    fn test_limit_metric_mock() {
+        let metric = LimitMetricMock::new(1000, 250);
+        assert_eq!(metric.limit, 1000);
+        assert_eq!(metric.used, 250);
+        assert_eq!(metric.remaining, 750);
+    }
+
+    #[test]
+    fn test_ai_usage_limit_factory() {
+        let limit = ZionTestData::ai_usage_limit(100, 1000, 50, 500, 10, 100);
+        assert_eq!(limit.name, "ai_usage");
+        assert_eq!(limit.ai_input_tokens.used, 100);
+        assert_eq!(limit.ai_input_tokens.limit, 1000);
+        assert_eq!(limit.ai_input_tokens.remaining, 900);
+        assert_eq!(limit.ai_output_tokens.used, 50);
+        assert_eq!(limit.ai_output_tokens.limit, 500);
+        assert_eq!(limit.ai_output_tokens.remaining, 450);
+        assert_eq!(limit.ai_requests.used, 10);
+        assert_eq!(limit.ai_requests.limit, 100);
+        assert_eq!(limit.ai_requests.remaining, 90);
     }
 }

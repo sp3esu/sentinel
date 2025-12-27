@@ -6,7 +6,8 @@
 //!
 //! Features:
 //! - Non-blocking fire-and-forget tracking
-//! - Aggregates increments by (user, limit) before sending
+//! - Aggregates increments by user before sending
+//! - Uses batch-increment API for efficiency (up to 1000 items per request)
 //! - Rate limits Zion API calls (default: 20 req/s)
 //! - Circuit breaker for graceful degradation
 //! - Redis persistence for failed increments with retry
@@ -22,9 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::zion::ZionClient;
-
-use super::limits;
+use crate::zion::{BatchIncrementItem, ZionClient};
 
 /// Redis key prefix for failed usage increments
 const REDIS_FAILED_INCREMENTS_KEY: &str = "sentinel:usage:failed";
@@ -65,19 +64,33 @@ impl Default for BatchingConfig {
     }
 }
 
-/// A single usage increment to be batched
+/// A single usage increment to be batched (unified format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UsageIncrement {
     external_id: String,
-    limit_name: String,
-    amount: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    requests: i64,
 }
 
-/// Key for aggregating increments
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-struct AggregationKey {
-    external_id: String,
-    limit_name: String,
+/// Aggregated usage for a user
+#[derive(Debug, Clone, Default)]
+struct AggregatedUsage {
+    input_tokens: i64,
+    output_tokens: i64,
+    requests: i64,
+}
+
+impl AggregatedUsage {
+    fn add(&mut self, other: &UsageIncrement) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.requests += other.requests;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.input_tokens == 0 && self.output_tokens == 0 && self.requests == 0
+    }
 }
 
 /// Circuit breaker state
@@ -130,29 +143,12 @@ impl BatchingUsageTracker {
     /// This method never blocks and never fails. If the channel is full,
     /// the increment is dropped and logged.
     pub fn track(&self, external_id: String, input_tokens: u64, output_tokens: u64) {
-        // Send input tokens
-        if input_tokens > 0 {
-            self.send_increment(UsageIncrement {
-                external_id: external_id.clone(),
-                limit_name: limits::AI_INPUT_TOKENS.to_string(),
-                amount: input_tokens as i64,
-            });
-        }
-
-        // Send output tokens
-        if output_tokens > 0 {
-            self.send_increment(UsageIncrement {
-                external_id: external_id.clone(),
-                limit_name: limits::AI_OUTPUT_TOKENS.to_string(),
-                amount: output_tokens as i64,
-            });
-        }
-
-        // Send request count
+        // Send unified usage increment
         self.send_increment(UsageIncrement {
             external_id,
-            limit_name: limits::AI_REQUESTS.to_string(),
-            amount: 1,
+            input_tokens: input_tokens as i64,
+            output_tokens: output_tokens as i64,
+            requests: 1,
         });
     }
 
@@ -163,15 +159,17 @@ impl BatchingUsageTracker {
                 mpsc::error::TrySendError::Full(inc) => {
                     warn!(
                         external_id = %inc.external_id,
-                        limit = %inc.limit_name,
-                        amount = inc.amount,
+                        input_tokens = inc.input_tokens,
+                        output_tokens = inc.output_tokens,
+                        requests = inc.requests,
                         "Usage tracking channel full, dropping increment"
                     );
                 }
                 mpsc::error::TrySendError::Closed(inc) => {
                     error!(
                         external_id = %inc.external_id,
-                        limit = %inc.limit_name,
+                        input_tokens = inc.input_tokens,
+                        output_tokens = inc.output_tokens,
                         "Usage tracking channel closed, dropping increment"
                     );
                 }
@@ -204,8 +202,8 @@ impl BatchingUsageTracker {
         let mut consecutive_failures: u32 = 0;
         let mut circuit_opened_at: Option<std::time::Instant> = None;
 
-        // Aggregation buffer
-        let mut buffer: HashMap<AggregationKey, i64> = HashMap::new();
+        // Aggregation buffer - keyed by external_id
+        let mut buffer: HashMap<String, AggregatedUsage> = HashMap::new();
         let mut last_flush = std::time::Instant::now();
         let mut last_retry = std::time::Instant::now();
 
@@ -225,12 +223,11 @@ impl BatchingUsageTracker {
                 maybe_increment = receiver.recv() => {
                     match maybe_increment {
                         Some(increment) => {
-                            // Aggregate increment
-                            let key = AggregationKey {
-                                external_id: increment.external_id,
-                                limit_name: increment.limit_name,
-                            };
-                            *buffer.entry(key).or_insert(0) += increment.amount;
+                            // Aggregate increment by external_id
+                            buffer
+                                .entry(increment.external_id.clone())
+                                .or_default()
+                                .add(&increment);
 
                             // Flush if batch is full
                             if buffer.len() >= config.max_batch_size {
@@ -302,7 +299,7 @@ impl BatchingUsageTracker {
         }
     }
 
-    /// Flush the aggregation buffer to Zion
+    /// Flush the aggregation buffer to Zion using batch-increment API
     async fn flush_buffer(
         zion_client: &Arc<ZionClient>,
         redis: &redis::aio::ConnectionManager,
@@ -311,7 +308,7 @@ impl BatchingUsageTracker {
             governor::state::InMemoryState,
             governor::clock::DefaultClock,
         >,
-        buffer: &mut HashMap<AggregationKey, i64>,
+        buffer: &mut HashMap<String, AggregatedUsage>,
         circuit_state: &mut CircuitState,
         consecutive_failures: &mut u32,
         circuit_opened_at: &mut Option<std::time::Instant>,
@@ -342,7 +339,11 @@ impl BatchingUsageTracker {
             }
         }
 
-        let increments: Vec<(AggregationKey, i64)> = buffer.drain().collect();
+        // Drain buffer and filter out empty entries
+        let increments: Vec<(String, AggregatedUsage)> = buffer
+            .drain()
+            .filter(|(_, usage)| !usage.is_empty())
+            .collect();
         let total_increments = increments.len();
 
         if total_increments == 0 {
@@ -350,84 +351,124 @@ impl BatchingUsageTracker {
         }
 
         debug!(
-            increment_count = total_increments,
+            user_count = total_increments,
             "Flushing usage increments to Zion"
         );
 
-        let mut success_count = 0;
-        let mut failure_count = 0;
+        // Wait for rate limiter
+        rate_limiter.until_ready().await;
 
-        for (key, amount) in increments {
-            // Wait for rate limiter
-            rate_limiter.until_ready().await;
+        // Convert to batch increment items
+        let batch_items: Vec<BatchIncrementItem> = increments
+            .iter()
+            .map(|(external_id, usage)| BatchIncrementItem {
+                external_id: external_id.clone(),
+                limit_name: "ai_usage".to_string(),
+                ai_input_tokens: if usage.input_tokens > 0 {
+                    Some(usage.input_tokens)
+                } else {
+                    None
+                },
+                ai_output_tokens: if usage.output_tokens > 0 {
+                    Some(usage.output_tokens)
+                } else {
+                    None
+                },
+                ai_requests: if usage.requests > 0 {
+                    Some(usage.requests)
+                } else {
+                    None
+                },
+            })
+            .collect();
 
-            // Send to Zion
-            match zion_client
-                .increment_usage(&key.external_id, &key.limit_name, amount)
-                .await
-            {
-                Ok(_) => {
-                    success_count += 1;
-                    // Reset failure count on success
-                    if *circuit_state == CircuitState::HalfOpen {
-                        debug!("Circuit breaker closing after successful request");
-                        *circuit_state = CircuitState::Closed;
-                        *consecutive_failures = 0;
-                        *circuit_opened_at = None;
-                    }
+        // Send batch to Zion
+        match zion_client.batch_increment(batch_items).await {
+            Ok(result) => {
+                // Reset failure count on success
+                if *circuit_state == CircuitState::HalfOpen {
+                    debug!("Circuit breaker closing after successful request");
+                    *circuit_state = CircuitState::Closed;
                 }
-                Err(e) => {
-                    failure_count += 1;
-                    *consecutive_failures += 1;
+                *consecutive_failures = 0;
+                *circuit_opened_at = None;
 
+                if result.failed > 0 {
                     warn!(
-                        external_id = %key.external_id,
-                        limit = %key.limit_name,
-                        amount = amount,
-                        error = %e,
-                        consecutive_failures = *consecutive_failures,
-                        "Failed to increment usage"
+                        processed = result.processed,
+                        failed = result.failed,
+                        "Batch increment completed with partial failures"
                     );
+                    // Persist failed items to Redis for retry
+                    for item_result in result.results.iter().filter(|r| !r.success) {
+                        // Find the original usage data
+                        if let Some((external_id, usage)) = increments
+                            .iter()
+                            .find(|(id, _)| *id == item_result.external_id)
+                        {
+                            let increment = UsageIncrement {
+                                external_id: external_id.clone(),
+                                input_tokens: usage.input_tokens,
+                                output_tokens: usage.output_tokens,
+                                requests: usage.requests,
+                            };
+                            if let Err(redis_err) =
+                                Self::persist_failed_increment(redis, &increment).await
+                            {
+                                error!(
+                                    error = %redis_err,
+                                    external_id = %external_id,
+                                    "Failed to persist failed increment to Redis"
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    debug!(
+                        processed = result.processed,
+                        "Batch flush completed successfully"
+                    );
+                }
+            }
+            Err(e) => {
+                *consecutive_failures += 1;
 
-                    // Persist to Redis for retry
+                warn!(
+                    user_count = total_increments,
+                    error = %e,
+                    consecutive_failures = *consecutive_failures,
+                    "Failed to batch increment usage"
+                );
+
+                // Persist all to Redis for retry
+                for (external_id, usage) in &increments {
                     let increment = UsageIncrement {
-                        external_id: key.external_id.clone(),
-                        limit_name: key.limit_name.clone(),
-                        amount,
+                        external_id: external_id.clone(),
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                        requests: usage.requests,
                     };
-                    if let Err(redis_err) = Self::persist_failed_increment(redis, &increment).await {
+                    if let Err(redis_err) = Self::persist_failed_increment(redis, &increment).await
+                    {
                         error!(
                             error = %redis_err,
+                            external_id = %external_id,
                             "Failed to persist failed increment to Redis"
                         );
                     }
+                }
 
-                    // Check if we should open circuit
-                    if *consecutive_failures >= config.circuit_breaker_threshold {
-                        error!(
-                            threshold = config.circuit_breaker_threshold,
-                            reset_seconds = config.circuit_breaker_reset.as_secs(),
-                            "Circuit breaker opening due to consecutive failures"
-                        );
-                        *circuit_state = CircuitState::Open;
-                        *circuit_opened_at = Some(std::time::Instant::now());
-                    }
+                // Check if we should open circuit
+                if *consecutive_failures >= config.circuit_breaker_threshold {
+                    error!(
+                        threshold = config.circuit_breaker_threshold,
+                        reset_seconds = config.circuit_breaker_reset.as_secs(),
+                        "Circuit breaker opening due to consecutive failures"
+                    );
+                    *circuit_state = CircuitState::Open;
+                    *circuit_opened_at = Some(std::time::Instant::now());
                 }
             }
-        }
-
-        if failure_count > 0 {
-            warn!(
-                total = total_increments,
-                success = success_count,
-                failed = failure_count,
-                "Batch flush completed with failures"
-            );
-        } else {
-            debug!(
-                total = total_increments,
-                "Batch flush completed successfully"
-            );
         }
     }
 
@@ -437,16 +478,23 @@ impl BatchingUsageTracker {
         increment: &UsageIncrement,
     ) -> Result<(), redis::RedisError> {
         let mut conn = redis.clone();
-        let json = serde_json::to_string(increment)
-            .map_err(|e| redis::RedisError::from((redis::ErrorKind::IoError, "JSON serialization error", e.to_string())))?;
+        let json = serde_json::to_string(increment).map_err(|e| {
+            redis::RedisError::from((
+                redis::ErrorKind::IoError,
+                "JSON serialization error",
+                e.to_string(),
+            ))
+        })?;
 
         // Use RPUSH to add to a list (FIFO queue)
-        conn.rpush::<_, _, ()>(REDIS_FAILED_INCREMENTS_KEY, json).await?;
+        conn.rpush::<_, _, ()>(REDIS_FAILED_INCREMENTS_KEY, json)
+            .await?;
 
         debug!(
             external_id = %increment.external_id,
-            limit = %increment.limit_name,
-            amount = increment.amount,
+            input_tokens = increment.input_tokens,
+            output_tokens = increment.output_tokens,
+            requests = increment.requests,
             "Persisted failed increment to Redis"
         );
 
@@ -454,6 +502,9 @@ impl BatchingUsageTracker {
     }
 
     /// Retry failed increments from Redis
+    ///
+    /// Uses single increment API for retries since these are typically
+    /// smaller numbers of items that failed previously.
     async fn retry_failed_increments(
         zion_client: &Arc<ZionClient>,
         redis: &redis::aio::ConnectionManager,
@@ -517,9 +568,14 @@ impl BatchingUsageTracker {
             // Wait for rate limiter
             rate_limiter.until_ready().await;
 
-            // Try to send to Zion
+            // Try to send to Zion using unified increment API
             match zion_client
-                .increment_usage(&increment.external_id, &increment.limit_name, increment.amount)
+                .increment_usage(
+                    &increment.external_id,
+                    increment.input_tokens,
+                    increment.output_tokens,
+                    increment.requests,
+                )
                 .await
             {
                 Ok(_) => {
@@ -527,8 +583,9 @@ impl BatchingUsageTracker {
                     *consecutive_failures = 0;
                     debug!(
                         external_id = %increment.external_id,
-                        limit = %increment.limit_name,
-                        amount = increment.amount,
+                        input_tokens = increment.input_tokens,
+                        output_tokens = increment.output_tokens,
+                        requests = increment.requests,
                         "Retry successful"
                     );
                 }
@@ -538,14 +595,16 @@ impl BatchingUsageTracker {
 
                     warn!(
                         external_id = %increment.external_id,
-                        limit = %increment.limit_name,
-                        amount = increment.amount,
+                        input_tokens = increment.input_tokens,
+                        output_tokens = increment.output_tokens,
                         error = %e,
                         "Retry failed, re-queuing"
                     );
 
                     // Re-queue the failed increment
-                    if let Err(redis_err) = Self::persist_failed_increment(redis, &increment).await {
+                    if let Err(redis_err) =
+                        Self::persist_failed_increment(redis, &increment).await
+                    {
                         error!(
                             error = %redis_err,
                             "Failed to re-queue increment to Redis"
@@ -620,49 +679,80 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregation_key_equality() {
-        let key1 = AggregationKey {
-            external_id: "user1".to_string(),
-            limit_name: "ai_tokens".to_string(),
-        };
-        let key2 = AggregationKey {
-            external_id: "user1".to_string(),
-            limit_name: "ai_tokens".to_string(),
-        };
-        let key3 = AggregationKey {
-            external_id: "user2".to_string(),
-            limit_name: "ai_tokens".to_string(),
-        };
-
-        assert_eq!(key1, key2);
-        assert_ne!(key1, key3);
+    fn test_aggregated_usage_default() {
+        let usage = AggregatedUsage::default();
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.requests, 0);
+        assert!(usage.is_empty());
     }
 
     #[test]
-    fn test_aggregation_key_hash() {
-        use std::collections::HashSet;
-
-        let mut set = HashSet::new();
-        set.insert(AggregationKey {
+    fn test_aggregated_usage_add() {
+        let mut usage = AggregatedUsage::default();
+        let increment = UsageIncrement {
             external_id: "user1".to_string(),
-            limit_name: "ai_tokens".to_string(),
-        });
+            input_tokens: 100,
+            output_tokens: 50,
+            requests: 1,
+        };
 
-        // Same key should not increase set size
-        set.insert(AggregationKey {
-            external_id: "user1".to_string(),
-            limit_name: "ai_tokens".to_string(),
-        });
+        usage.add(&increment);
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 50);
+        assert_eq!(usage.requests, 1);
+        assert!(!usage.is_empty());
 
-        assert_eq!(set.len(), 1);
+        // Add more
+        usage.add(&increment);
+        assert_eq!(usage.input_tokens, 200);
+        assert_eq!(usage.output_tokens, 100);
+        assert_eq!(usage.requests, 2);
+    }
 
-        // Different key should increase set size
-        set.insert(AggregationKey {
-            external_id: "user2".to_string(),
-            limit_name: "ai_tokens".to_string(),
-        });
+    #[test]
+    fn test_aggregated_usage_is_empty() {
+        let empty = AggregatedUsage::default();
+        assert!(empty.is_empty());
 
-        assert_eq!(set.len(), 2);
+        let with_input = AggregatedUsage {
+            input_tokens: 1,
+            output_tokens: 0,
+            requests: 0,
+        };
+        assert!(!with_input.is_empty());
+
+        let with_output = AggregatedUsage {
+            input_tokens: 0,
+            output_tokens: 1,
+            requests: 0,
+        };
+        assert!(!with_output.is_empty());
+
+        let with_request = AggregatedUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            requests: 1,
+        };
+        assert!(!with_request.is_empty());
+    }
+
+    #[test]
+    fn test_usage_increment_serialization() {
+        let increment = UsageIncrement {
+            external_id: "user123".to_string(),
+            input_tokens: 100,
+            output_tokens: 50,
+            requests: 1,
+        };
+
+        let json = serde_json::to_string(&increment).unwrap();
+        let deserialized: UsageIncrement = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.external_id, "user123");
+        assert_eq!(deserialized.input_tokens, 100);
+        assert_eq!(deserialized.output_tokens, 50);
+        assert_eq!(deserialized.requests, 1);
     }
 
     #[test]
@@ -678,5 +768,52 @@ mod tests {
 
         state = CircuitState::Closed;
         assert_eq!(state, CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_aggregation_by_external_id() {
+        use std::collections::HashMap;
+
+        let mut buffer: HashMap<String, AggregatedUsage> = HashMap::new();
+
+        // First increment for user1
+        let inc1 = UsageIncrement {
+            external_id: "user1".to_string(),
+            input_tokens: 100,
+            output_tokens: 50,
+            requests: 1,
+        };
+        buffer.entry(inc1.external_id.clone()).or_default().add(&inc1);
+
+        // Second increment for user1 (should aggregate)
+        let inc2 = UsageIncrement {
+            external_id: "user1".to_string(),
+            input_tokens: 200,
+            output_tokens: 100,
+            requests: 1,
+        };
+        buffer.entry(inc2.external_id.clone()).or_default().add(&inc2);
+
+        // Increment for user2
+        let inc3 = UsageIncrement {
+            external_id: "user2".to_string(),
+            input_tokens: 50,
+            output_tokens: 25,
+            requests: 1,
+        };
+        buffer.entry(inc3.external_id.clone()).or_default().add(&inc3);
+
+        // Verify aggregation
+        assert_eq!(buffer.len(), 2);
+
+        let user1_usage = buffer.get("user1").unwrap();
+        assert_eq!(user1_usage.input_tokens, 300);
+        assert_eq!(user1_usage.output_tokens, 150);
+        assert_eq!(user1_usage.requests, 2);
+
+        let user2_usage = buffer.get("user2").unwrap();
+        assert_eq!(user2_usage.input_tokens, 50);
+        assert_eq!(user2_usage.output_tokens, 25);
+        assert_eq!(user2_usage.requests, 1);
     }
 }

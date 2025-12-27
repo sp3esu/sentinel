@@ -7,7 +7,11 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use crate::{
     config::Config,
     error::{AppError, AppResult},
-    zion::models::*,
+    zion::models::{
+        BatchIncrementData, BatchIncrementItem, BatchIncrementRequest, BatchIncrementResponse,
+        ExternalLimitsResponse, IncrementUsageRequest, IncrementUsageResponse, UserLimit,
+        UserProfile, UserProfileResponse,
+    },
 };
 
 /// Zion API client
@@ -62,19 +66,24 @@ impl ZionClient {
         Ok(result.data.limits)
     }
 
-    /// Increment usage for a limit
+    /// Increment AI usage (unified format with all 3 metrics)
+    ///
+    /// Sends a single request to increment input tokens, output tokens, and request count.
     pub async fn increment_usage(
         &self,
         external_id: &str,
-        limit_name: &str,
-        amount: i64,
+        input_tokens: i64,
+        output_tokens: i64,
+        requests: i64,
     ) -> AppResult<UserLimit> {
         let url = format!("{}/api/v1/usage/external/increment", self.base_url);
 
         let request = IncrementUsageRequest {
             external_id: external_id.to_string(),
-            limit_name: limit_name.to_string(),
-            amount: Some(amount),
+            limit_name: "ai_usage".to_string(),
+            ai_input_tokens: if input_tokens > 0 { Some(input_tokens) } else { None },
+            ai_output_tokens: if output_tokens > 0 { Some(output_tokens) } else { None },
+            ai_requests: if requests > 0 { Some(requests) } else { None },
         };
 
         let response = self
@@ -95,6 +104,53 @@ impl ZionClient {
         }
 
         let result: IncrementUsageResponse = response.json().await?;
+        Ok(result.data)
+    }
+
+    /// Batch increment usage for multiple users
+    ///
+    /// Sends up to 1000 increments in a single request.
+    /// Returns partial success - individual failures don't fail the entire batch.
+    pub async fn batch_increment(
+        &self,
+        items: Vec<BatchIncrementItem>,
+    ) -> AppResult<BatchIncrementData> {
+        if items.is_empty() {
+            return Ok(BatchIncrementData {
+                processed: 0,
+                failed: 0,
+                results: vec![],
+            });
+        }
+
+        if items.len() > 1000 {
+            return Err(AppError::BadRequest(
+                "Batch increment limited to 1000 items".to_string(),
+            ));
+        }
+
+        let url = format!("{}/api/v1/usage/external/batch-increment", self.base_url);
+
+        let request = BatchIncrementRequest { increments: items };
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(self.api_key_headers())
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(AppError::UpstreamError(format!(
+                "Zion batch API error {}: {}",
+                status, text
+            )));
+        }
+
+        let result: BatchIncrementResponse = response.json().await?;
         Ok(result.data)
     }
 

@@ -14,17 +14,28 @@ pub enum ResetPeriod {
     Never,
 }
 
-/// User limit information from Zion
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A single metric within a unified limit (e.g., aiInputTokens, aiOutputTokens, aiRequests)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct UserLimit {
-    pub limit_id: String,
-    pub name: String,
-    pub display_name: String,
-    pub unit: Option<String>,
+pub struct LimitMetric {
     pub limit: i64,
     pub used: i64,
     pub remaining: i64,
+}
+
+/// User limit information from Zion (unified structure with embedded metrics)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserLimit {
+    pub name: String,
+    pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    pub ai_input_tokens: LimitMetric,
+    pub ai_output_tokens: LimitMetric,
+    pub ai_requests: LimitMetric,
     pub reset_period: Option<ResetPeriod>,
     pub period_start: Option<String>,
     pub period_end: Option<String>,
@@ -47,14 +58,18 @@ pub struct ExternalLimitsData {
     pub limits: Vec<UserLimit>,
 }
 
-/// Request to increment usage
+/// Request to increment usage (unified format with all 3 metrics)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncrementUsageRequest {
     pub external_id: String,
     pub limit_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub amount: Option<i64>,
+    pub ai_input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_requests: Option<i64>,
 }
 
 /// Response from increment usage endpoint
@@ -63,6 +78,69 @@ pub struct IncrementUsageRequest {
 pub struct IncrementUsageResponse {
     pub success: bool,
     pub data: UserLimit,
+}
+
+/// Single item in a batch increment request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementItem {
+    pub external_id: String,
+    pub limit_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_requests: Option<i64>,
+}
+
+/// Batch increment request (up to 1000 items)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementRequest {
+    pub increments: Vec<BatchIncrementItem>,
+}
+
+/// Result for a single item in batch increment response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementResult {
+    pub external_id: String,
+    pub limit_name: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_input_tokens: Option<BatchIncrementMetricResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_output_tokens: Option<BatchIncrementMetricResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_requests: Option<BatchIncrementMetricResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Metric result in batch increment response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementMetricResult {
+    pub new_value: i64,
+    pub limit: i64,
+}
+
+/// Response from batch increment endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementResponse {
+    pub success: bool,
+    pub data: BatchIncrementData,
+}
+
+/// Data in batch increment response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIncrementData {
+    pub processed: i32,
+    pub failed: i32,
+    pub results: Vec<BatchIncrementResult>,
 }
 
 /// User profile from /api/v1/users/me
@@ -164,59 +242,84 @@ mod tests {
     }
 
     // ===========================================
-    // UserLimit Tests
+    // LimitMetric Tests
+    // ===========================================
+
+    #[test]
+    fn test_limit_metric_deserialize() {
+        let json = r#"{"limit": 10000, "used": 500, "remaining": 9500}"#;
+        let metric: LimitMetric = serde_json::from_str(json).unwrap();
+        assert_eq!(metric.limit, 10000);
+        assert_eq!(metric.used, 500);
+        assert_eq!(metric.remaining, 9500);
+    }
+
+    #[test]
+    fn test_limit_metric_serialize() {
+        let metric = LimitMetric {
+            limit: 1000,
+            used: 100,
+            remaining: 900,
+        };
+        let json = serde_json::to_string(&metric).unwrap();
+        assert!(json.contains("\"limit\":1000"));
+        assert!(json.contains("\"used\":100"));
+        assert!(json.contains("\"remaining\":900"));
+    }
+
+    #[test]
+    fn test_limit_metric_negative_remaining() {
+        let json = r#"{"limit": 100, "used": 150, "remaining": -50}"#;
+        let metric: LimitMetric = serde_json::from_str(json).unwrap();
+        assert_eq!(metric.remaining, -50);
+    }
+
+    // ===========================================
+    // UserLimit Tests (Unified Structure)
     // ===========================================
 
     #[test]
     fn test_deserialize_user_limit() {
         let json = r#"{
-            "limitId": "clx123abc",
-            "name": "ai_input_tokens",
-            "displayName": "AI Input Tokens",
+            "name": "ai_usage",
+            "displayName": "AI Usage",
             "unit": "tokens",
-            "limit": 10000,
-            "used": 500,
-            "remaining": 9500,
+            "aiInputTokens": {"limit": 100000, "used": 1000, "remaining": 99000},
+            "aiOutputTokens": {"limit": 50000, "used": 500, "remaining": 49500},
+            "aiRequests": {"limit": 1000, "used": 10, "remaining": 990},
             "resetPeriod": "MONTHLY",
             "periodStart": "2024-01-01T00:00:00Z",
             "periodEnd": "2024-01-31T23:59:59Z"
         }"#;
 
         let limit: UserLimit = serde_json::from_str(json).unwrap();
-        assert_eq!(limit.name, "ai_input_tokens");
-        assert_eq!(limit.limit, 10000);
-        assert_eq!(limit.used, 500);
-        assert_eq!(limit.remaining, 9500);
+        assert_eq!(limit.name, "ai_usage");
+        assert_eq!(limit.display_name, "AI Usage");
+        assert_eq!(limit.ai_input_tokens.limit, 100000);
+        assert_eq!(limit.ai_input_tokens.used, 1000);
+        assert_eq!(limit.ai_output_tokens.limit, 50000);
+        assert_eq!(limit.ai_requests.limit, 1000);
         assert_eq!(limit.reset_period, Some(ResetPeriod::Monthly));
     }
 
     #[test]
     fn test_deserialize_user_limit_minimal() {
-        // Test with only required fields and nulls for optional
         let json = r#"{
-            "limitId": "clx123",
-            "name": "test_limit",
-            "displayName": "Test Limit",
-            "unit": null,
-            "limit": 100,
-            "used": 0,
-            "remaining": 100,
+            "name": "ai_usage",
+            "displayName": "AI Usage",
+            "aiInputTokens": {"limit": 100, "used": 0, "remaining": 100},
+            "aiOutputTokens": {"limit": 50, "used": 0, "remaining": 50},
+            "aiRequests": {"limit": 10, "used": 0, "remaining": 10},
             "resetPeriod": null,
             "periodStart": null,
             "periodEnd": null
         }"#;
 
         let limit: UserLimit = serde_json::from_str(json).unwrap();
-        assert_eq!(limit.limit_id, "clx123");
-        assert_eq!(limit.name, "test_limit");
-        assert_eq!(limit.display_name, "Test Limit");
+        assert_eq!(limit.name, "ai_usage");
         assert!(limit.unit.is_none());
-        assert_eq!(limit.limit, 100);
-        assert_eq!(limit.used, 0);
-        assert_eq!(limit.remaining, 100);
+        assert!(limit.description.is_none());
         assert!(limit.reset_period.is_none());
-        assert!(limit.period_start.is_none());
-        assert!(limit.period_end.is_none());
     }
 
     #[test]
@@ -230,13 +333,11 @@ mod tests {
 
         for (json_period, expected) in periods {
             let json = format!(r#"{{
-                "limitId": "clx123",
-                "name": "test",
-                "displayName": "Test",
-                "unit": null,
-                "limit": 100,
-                "used": 0,
-                "remaining": 100,
+                "name": "ai_usage",
+                "displayName": "AI Usage",
+                "aiInputTokens": {{"limit": 100, "used": 0, "remaining": 100}},
+                "aiOutputTokens": {{"limit": 50, "used": 0, "remaining": 50}},
+                "aiRequests": {{"limit": 10, "used": 0, "remaining": 10}},
                 "resetPeriod": "{}",
                 "periodStart": null,
                 "periodEnd": null
@@ -250,143 +351,221 @@ mod tests {
     #[test]
     fn test_serialize_user_limit() {
         let limit = UserLimit {
-            limit_id: "clx123".to_string(),
-            name: "ai_tokens".to_string(),
-            display_name: "AI Tokens".to_string(),
+            name: "ai_usage".to_string(),
+            display_name: "AI Usage".to_string(),
+            description: None,
             unit: Some("tokens".to_string()),
-            limit: 1000,
-            used: 100,
-            remaining: 900,
+            ai_input_tokens: LimitMetric { limit: 1000, used: 100, remaining: 900 },
+            ai_output_tokens: LimitMetric { limit: 500, used: 50, remaining: 450 },
+            ai_requests: LimitMetric { limit: 100, used: 10, remaining: 90 },
             reset_period: Some(ResetPeriod::Daily),
             period_start: Some("2024-01-01T00:00:00Z".to_string()),
             period_end: Some("2024-01-01T23:59:59Z".to_string()),
         };
 
         let json = serde_json::to_string(&limit).unwrap();
-        assert!(json.contains("\"limitId\":\"clx123\""));
-        assert!(json.contains("\"name\":\"ai_tokens\""));
-        assert!(json.contains("\"displayName\":\"AI Tokens\""));
+        assert!(json.contains("\"name\":\"ai_usage\""));
+        assert!(json.contains("\"displayName\":\"AI Usage\""));
         assert!(json.contains("\"resetPeriod\":\"DAILY\""));
+        assert!(json.contains("\"aiInputTokens\""));
+        assert!(json.contains("\"aiOutputTokens\""));
+        assert!(json.contains("\"aiRequests\""));
     }
 
     #[test]
     fn test_user_limit_clone() {
         let limit = UserLimit {
-            limit_id: "clx123".to_string(),
-            name: "test".to_string(),
-            display_name: "Test".to_string(),
+            name: "ai_usage".to_string(),
+            display_name: "AI Usage".to_string(),
+            description: None,
             unit: None,
-            limit: 100,
-            used: 50,
-            remaining: 50,
+            ai_input_tokens: LimitMetric { limit: 100, used: 50, remaining: 50 },
+            ai_output_tokens: LimitMetric { limit: 50, used: 25, remaining: 25 },
+            ai_requests: LimitMetric { limit: 10, used: 5, remaining: 5 },
             reset_period: None,
             period_start: None,
             period_end: None,
         };
 
         let cloned = limit.clone();
-        assert_eq!(limit.limit_id, cloned.limit_id);
         assert_eq!(limit.name, cloned.name);
+        assert_eq!(limit.ai_input_tokens.limit, cloned.ai_input_tokens.limit);
     }
 
     #[test]
-    fn test_user_limit_negative_values() {
-        // Test that negative values are allowed (remaining can be negative if overused)
+    fn test_user_limit_negative_remaining() {
         let json = r#"{
-            "limitId": "clx123",
-            "name": "test",
-            "displayName": "Test",
-            "unit": null,
-            "limit": 100,
-            "used": 150,
-            "remaining": -50,
+            "name": "ai_usage",
+            "displayName": "AI Usage",
+            "aiInputTokens": {"limit": 100, "used": 150, "remaining": -50},
+            "aiOutputTokens": {"limit": 50, "used": 0, "remaining": 50},
+            "aiRequests": {"limit": 10, "used": 0, "remaining": 10},
             "resetPeriod": null,
             "periodStart": null,
             "periodEnd": null
         }"#;
 
         let limit: UserLimit = serde_json::from_str(json).unwrap();
-        assert_eq!(limit.used, 150);
-        assert_eq!(limit.remaining, -50);
+        assert_eq!(limit.ai_input_tokens.used, 150);
+        assert_eq!(limit.ai_input_tokens.remaining, -50);
     }
 
     // ===========================================
-    // IncrementUsageRequest Tests
+    // IncrementUsageRequest Tests (Unified Format)
     // ===========================================
 
     #[test]
     fn test_serialize_increment_request() {
         let request = IncrementUsageRequest {
             external_id: "user123".to_string(),
-            limit_name: "ai_input_tokens".to_string(),
-            amount: Some(100),
-        };
-
-        let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("externalId"));
-        assert!(json.contains("limitName"));
-        assert!(json.contains("100"));
-    }
-
-    #[test]
-    fn test_serialize_increment_request_no_amount() {
-        let request = IncrementUsageRequest {
-            external_id: "user123".to_string(),
-            limit_name: "ai_requests".to_string(),
-            amount: None,
+            limit_name: "ai_usage".to_string(),
+            ai_input_tokens: Some(100),
+            ai_output_tokens: Some(50),
+            ai_requests: Some(1),
         };
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"externalId\":\"user123\""));
-        assert!(json.contains("\"limitName\":\"ai_requests\""));
-        // amount should be skipped when None
-        assert!(!json.contains("amount"));
+        assert!(json.contains("\"limitName\":\"ai_usage\""));
+        assert!(json.contains("\"aiInputTokens\":100"));
+        assert!(json.contains("\"aiOutputTokens\":50"));
+        assert!(json.contains("\"aiRequests\":1"));
+    }
+
+    #[test]
+    fn test_serialize_increment_request_partial() {
+        let request = IncrementUsageRequest {
+            external_id: "user123".to_string(),
+            limit_name: "ai_usage".to_string(),
+            ai_input_tokens: Some(100),
+            ai_output_tokens: None,
+            ai_requests: None,
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"aiInputTokens\":100"));
+        assert!(!json.contains("aiOutputTokens"));
+        assert!(!json.contains("aiRequests"));
     }
 
     #[test]
     fn test_deserialize_increment_request() {
         let json = r#"{
             "externalId": "ext_abc123",
-            "limitName": "ai_output_tokens",
-            "amount": 500
+            "limitName": "ai_usage",
+            "aiInputTokens": 1000,
+            "aiOutputTokens": 500,
+            "aiRequests": 1
         }"#;
 
         let request: IncrementUsageRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.external_id, "ext_abc123");
-        assert_eq!(request.limit_name, "ai_output_tokens");
-        assert_eq!(request.amount, Some(500));
-    }
-
-    #[test]
-    fn test_deserialize_increment_request_null_amount() {
-        let json = r#"{
-            "externalId": "ext_abc123",
-            "limitName": "ai_requests",
-            "amount": null
-        }"#;
-
-        let request: IncrementUsageRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.external_id, "ext_abc123");
-        assert_eq!(request.limit_name, "ai_requests");
-        assert!(request.amount.is_none());
+        assert_eq!(request.limit_name, "ai_usage");
+        assert_eq!(request.ai_input_tokens, Some(1000));
+        assert_eq!(request.ai_output_tokens, Some(500));
+        assert_eq!(request.ai_requests, Some(1));
     }
 
     #[test]
     fn test_increment_request_clone() {
         let request = IncrementUsageRequest {
             external_id: "user123".to_string(),
-            limit_name: "ai_tokens".to_string(),
-            amount: Some(100),
+            limit_name: "ai_usage".to_string(),
+            ai_input_tokens: Some(100),
+            ai_output_tokens: Some(50),
+            ai_requests: Some(1),
         };
 
         let cloned = request.clone();
         assert_eq!(request.external_id, cloned.external_id);
-        assert_eq!(request.limit_name, cloned.limit_name);
-        assert_eq!(request.amount, cloned.amount);
+        assert_eq!(request.ai_input_tokens, cloned.ai_input_tokens);
     }
 
     // ===========================================
-    // ExternalLimitsResponse Tests
+    // BatchIncrementItem Tests
+    // ===========================================
+
+    #[test]
+    fn test_batch_increment_item_serialize() {
+        let item = BatchIncrementItem {
+            external_id: "user123".to_string(),
+            limit_name: "ai_usage".to_string(),
+            ai_input_tokens: Some(1000),
+            ai_output_tokens: Some(500),
+            ai_requests: Some(1),
+        };
+
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(json.contains("\"externalId\":\"user123\""));
+        assert!(json.contains("\"limitName\":\"ai_usage\""));
+        assert!(json.contains("\"aiInputTokens\":1000"));
+    }
+
+    #[test]
+    fn test_batch_increment_request_serialize() {
+        let request = BatchIncrementRequest {
+            increments: vec![
+                BatchIncrementItem {
+                    external_id: "user1".to_string(),
+                    limit_name: "ai_usage".to_string(),
+                    ai_input_tokens: Some(1000),
+                    ai_output_tokens: Some(500),
+                    ai_requests: Some(1),
+                },
+                BatchIncrementItem {
+                    external_id: "user2".to_string(),
+                    limit_name: "ai_usage".to_string(),
+                    ai_input_tokens: Some(2000),
+                    ai_output_tokens: None,
+                    ai_requests: Some(1),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"increments\""));
+        assert!(json.contains("\"user1\""));
+        assert!(json.contains("\"user2\""));
+    }
+
+    #[test]
+    fn test_batch_increment_response_deserialize() {
+        let json = r#"{
+            "success": true,
+            "data": {
+                "processed": 2,
+                "failed": 1,
+                "results": [
+                    {
+                        "externalId": "user1",
+                        "limitName": "ai_usage",
+                        "success": true,
+                        "aiInputTokens": {"newValue": 1100, "limit": 100000},
+                        "aiOutputTokens": {"newValue": 550, "limit": 50000},
+                        "aiRequests": {"newValue": 11, "limit": 1000}
+                    },
+                    {
+                        "externalId": "user2",
+                        "limitName": "ai_usage",
+                        "success": false,
+                        "error": "User not found"
+                    }
+                ]
+            }
+        }"#;
+
+        let response: BatchIncrementResponse = serde_json::from_str(json).unwrap();
+        assert!(response.success);
+        assert_eq!(response.data.processed, 2);
+        assert_eq!(response.data.failed, 1);
+        assert_eq!(response.data.results.len(), 2);
+        assert!(response.data.results[0].success);
+        assert!(!response.data.results[1].success);
+        assert_eq!(response.data.results[1].error, Some("User not found".to_string()));
+    }
+
+    // ===========================================
+    // ExternalLimitsResponse Tests (Unified Structure)
     // ===========================================
 
     #[test]
@@ -398,16 +577,15 @@ mod tests {
                 "externalId": "ext_456",
                 "limits": [
                     {
-                        "limitId": "lim_1",
-                        "name": "ai_input_tokens",
-                        "displayName": "AI Input Tokens",
+                        "name": "ai_usage",
+                        "displayName": "AI Usage",
                         "unit": "tokens",
-                        "limit": 10000,
-                        "used": 500,
-                        "remaining": 9500,
+                        "aiInputTokens": {"limit": 100000, "used": 1000, "remaining": 99000},
+                        "aiOutputTokens": {"limit": 50000, "used": 500, "remaining": 49500},
+                        "aiRequests": {"limit": 1000, "used": 10, "remaining": 990},
                         "resetPeriod": "MONTHLY",
-                        "periodStart": "2024-01-01",
-                        "periodEnd": "2024-01-31"
+                        "periodStart": "2024-01-01T00:00:00Z",
+                        "periodEnd": "2024-01-31T23:59:59Z"
                     }
                 ]
             }
@@ -418,7 +596,10 @@ mod tests {
         assert_eq!(response.data.user_id, "user_123");
         assert_eq!(response.data.external_id, "ext_456");
         assert_eq!(response.data.limits.len(), 1);
-        assert_eq!(response.data.limits[0].name, "ai_input_tokens");
+        assert_eq!(response.data.limits[0].name, "ai_usage");
+        assert_eq!(response.data.limits[0].ai_input_tokens.limit, 100000);
+        assert_eq!(response.data.limits[0].ai_output_tokens.limit, 50000);
+        assert_eq!(response.data.limits[0].ai_requests.limit, 1000);
     }
 
     #[test]
@@ -438,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_external_limits_response_multiple_limits() {
+    fn test_deserialize_external_limits_response_with_description() {
         let json = r#"{
             "success": true,
             "data": {
@@ -446,38 +627,14 @@ mod tests {
                 "externalId": "ext_456",
                 "limits": [
                     {
-                        "limitId": "lim_1",
-                        "name": "ai_input_tokens",
-                        "displayName": "AI Input Tokens",
-                        "unit": "tokens",
-                        "limit": 10000,
-                        "used": 500,
-                        "remaining": 9500,
+                        "name": "ai_usage",
+                        "displayName": "AI Usage",
+                        "description": "AI token and request limits",
+                        "unit": "tokens/requests",
+                        "aiInputTokens": {"limit": 100000, "used": 0, "remaining": 100000},
+                        "aiOutputTokens": {"limit": 50000, "used": 0, "remaining": 50000},
+                        "aiRequests": {"limit": 1000, "used": 0, "remaining": 1000},
                         "resetPeriod": "MONTHLY",
-                        "periodStart": null,
-                        "periodEnd": null
-                    },
-                    {
-                        "limitId": "lim_2",
-                        "name": "ai_output_tokens",
-                        "displayName": "AI Output Tokens",
-                        "unit": "tokens",
-                        "limit": 20000,
-                        "used": 1000,
-                        "remaining": 19000,
-                        "resetPeriod": "MONTHLY",
-                        "periodStart": null,
-                        "periodEnd": null
-                    },
-                    {
-                        "limitId": "lim_3",
-                        "name": "ai_requests",
-                        "displayName": "AI Requests",
-                        "unit": "requests",
-                        "limit": 100,
-                        "used": 10,
-                        "remaining": 90,
-                        "resetPeriod": "DAILY",
                         "periodStart": null,
                         "periodEnd": null
                     }
@@ -486,14 +643,12 @@ mod tests {
         }"#;
 
         let response: ExternalLimitsResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.data.limits.len(), 3);
-        assert_eq!(response.data.limits[0].name, "ai_input_tokens");
-        assert_eq!(response.data.limits[1].name, "ai_output_tokens");
-        assert_eq!(response.data.limits[2].name, "ai_requests");
+        assert_eq!(response.data.limits.len(), 1);
+        assert_eq!(response.data.limits[0].description, Some("AI token and request limits".to_string()));
     }
 
     // ===========================================
-    // IncrementUsageResponse Tests
+    // IncrementUsageResponse Tests (Unified Structure)
     // ===========================================
 
     #[test]
@@ -501,13 +656,12 @@ mod tests {
         let json = r#"{
             "success": true,
             "data": {
-                "limitId": "lim_1",
-                "name": "ai_input_tokens",
-                "displayName": "AI Input Tokens",
+                "name": "ai_usage",
+                "displayName": "AI Usage",
                 "unit": "tokens",
-                "limit": 10000,
-                "used": 600,
-                "remaining": 9400,
+                "aiInputTokens": {"limit": 100000, "used": 1100, "remaining": 98900},
+                "aiOutputTokens": {"limit": 50000, "used": 550, "remaining": 49450},
+                "aiRequests": {"limit": 1000, "used": 11, "remaining": 989},
                 "resetPeriod": "MONTHLY",
                 "periodStart": null,
                 "periodEnd": null
@@ -516,9 +670,11 @@ mod tests {
 
         let response: IncrementUsageResponse = serde_json::from_str(json).unwrap();
         assert!(response.success);
-        assert_eq!(response.data.name, "ai_input_tokens");
-        assert_eq!(response.data.used, 600);
-        assert_eq!(response.data.remaining, 9400);
+        assert_eq!(response.data.name, "ai_usage");
+        assert_eq!(response.data.ai_input_tokens.used, 1100);
+        assert_eq!(response.data.ai_input_tokens.remaining, 98900);
+        assert_eq!(response.data.ai_output_tokens.used, 550);
+        assert_eq!(response.data.ai_requests.used, 11);
     }
 
     // ===========================================
@@ -655,13 +811,11 @@ mod tests {
     #[test]
     fn test_invalid_reset_period_fails() {
         let json = r#"{
-            "limitId": "clx123",
-            "name": "test",
-            "displayName": "Test",
-            "unit": null,
-            "limit": 100,
-            "used": 0,
-            "remaining": 100,
+            "name": "ai_usage",
+            "displayName": "AI Usage",
+            "aiInputTokens": {"limit": 100, "used": 0, "remaining": 100},
+            "aiOutputTokens": {"limit": 50, "used": 0, "remaining": 50},
+            "aiRequests": {"limit": 10, "used": 0, "remaining": 10},
             "resetPeriod": "INVALID",
             "periodStart": null,
             "periodEnd": null
@@ -674,32 +828,30 @@ mod tests {
     #[test]
     fn test_large_limit_values() {
         let json = r#"{
-            "limitId": "clx123",
-            "name": "test",
-            "displayName": "Test",
-            "unit": null,
-            "limit": 9223372036854775807,
-            "used": 1000000000000,
-            "remaining": 9223372035854775807,
+            "name": "ai_usage",
+            "displayName": "AI Usage",
+            "aiInputTokens": {"limit": 9223372036854775807, "used": 1000000000000, "remaining": 9223372035854775807},
+            "aiOutputTokens": {"limit": 50000, "used": 0, "remaining": 50000},
+            "aiRequests": {"limit": 1000, "used": 0, "remaining": 1000},
             "resetPeriod": null,
             "periodStart": null,
             "periodEnd": null
         }"#;
 
         let limit: UserLimit = serde_json::from_str(json).unwrap();
-        assert_eq!(limit.limit, i64::MAX);
+        assert_eq!(limit.ai_input_tokens.limit, i64::MAX);
     }
 
     #[test]
     fn test_user_limit_roundtrip() {
         let original = UserLimit {
-            limit_id: "clx123".to_string(),
-            name: "ai_tokens".to_string(),
-            display_name: "AI Tokens".to_string(),
+            name: "ai_usage".to_string(),
+            display_name: "AI Usage".to_string(),
+            description: Some("AI token and request limits".to_string()),
             unit: Some("tokens".to_string()),
-            limit: 10000,
-            used: 500,
-            remaining: 9500,
+            ai_input_tokens: LimitMetric { limit: 100000, used: 1000, remaining: 99000 },
+            ai_output_tokens: LimitMetric { limit: 50000, used: 500, remaining: 49500 },
+            ai_requests: LimitMetric { limit: 1000, used: 10, remaining: 990 },
             reset_period: Some(ResetPeriod::Monthly),
             period_start: Some("2024-01-01".to_string()),
             period_end: Some("2024-01-31".to_string()),
@@ -708,11 +860,11 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: UserLimit = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(original.limit_id, deserialized.limit_id);
         assert_eq!(original.name, deserialized.name);
-        assert_eq!(original.limit, deserialized.limit);
-        assert_eq!(original.used, deserialized.used);
-        assert_eq!(original.remaining, deserialized.remaining);
+        assert_eq!(original.ai_input_tokens.limit, deserialized.ai_input_tokens.limit);
+        assert_eq!(original.ai_input_tokens.used, deserialized.ai_input_tokens.used);
+        assert_eq!(original.ai_output_tokens.limit, deserialized.ai_output_tokens.limit);
+        assert_eq!(original.ai_requests.limit, deserialized.ai_requests.limit);
         assert_eq!(original.reset_period, deserialized.reset_period);
     }
 
@@ -720,8 +872,10 @@ mod tests {
     fn test_increment_request_roundtrip() {
         let original = IncrementUsageRequest {
             external_id: "ext_123".to_string(),
-            limit_name: "ai_tokens".to_string(),
-            amount: Some(100),
+            limit_name: "ai_usage".to_string(),
+            ai_input_tokens: Some(1000),
+            ai_output_tokens: Some(500),
+            ai_requests: Some(1),
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -729,7 +883,9 @@ mod tests {
 
         assert_eq!(original.external_id, deserialized.external_id);
         assert_eq!(original.limit_name, deserialized.limit_name);
-        assert_eq!(original.amount, deserialized.amount);
+        assert_eq!(original.ai_input_tokens, deserialized.ai_input_tokens);
+        assert_eq!(original.ai_output_tokens, deserialized.ai_output_tokens);
+        assert_eq!(original.ai_requests, deserialized.ai_requests);
     }
 
     #[test]
@@ -761,13 +917,13 @@ mod tests {
     #[test]
     fn test_user_limit_debug() {
         let limit = UserLimit {
-            limit_id: "clx123".to_string(),
-            name: "test".to_string(),
-            display_name: "Test".to_string(),
+            name: "ai_usage".to_string(),
+            display_name: "AI Usage".to_string(),
+            description: None,
             unit: None,
-            limit: 100,
-            used: 50,
-            remaining: 50,
+            ai_input_tokens: LimitMetric { limit: 100, used: 50, remaining: 50 },
+            ai_output_tokens: LimitMetric { limit: 50, used: 25, remaining: 25 },
+            ai_requests: LimitMetric { limit: 10, used: 5, remaining: 5 },
             reset_period: None,
             period_start: None,
             period_end: None,
@@ -775,7 +931,7 @@ mod tests {
 
         let debug_str = format!("{:?}", limit);
         assert!(debug_str.contains("UserLimit"));
-        assert!(debug_str.contains("clx123"));
+        assert!(debug_str.contains("ai_usage"));
     }
 
     #[test]
