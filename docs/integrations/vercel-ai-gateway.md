@@ -33,7 +33,7 @@ Sentinel uses Vercel AI Gateway as its upstream provider for AI completions.
 
 ```bash
 # Vercel AI Gateway URL
-VERCEL_AI_GATEWAY_URL=https://gateway.ai.vercel.com/v1
+VERCEL_AI_GATEWAY_URL=https://api.vercel.ai/v1
 
 # API key for authentication
 VERCEL_AI_GATEWAY_API_KEY=your-vercel-key
@@ -299,7 +299,7 @@ Before forwarding:
 ```bash
 # Test gateway connectivity
 curl -H "Authorization: Bearer $VERCEL_AI_GATEWAY_API_KEY" \
-  https://gateway.ai.vercel.com/v1/models
+  https://api.vercel.ai/v1/models
 
 # Check Sentinel logs
 docker-compose logs -f sentinel | grep "vercel"

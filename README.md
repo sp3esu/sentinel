@@ -94,7 +94,7 @@ cargo run
 | `SENTINEL_HOST` | No | `0.0.0.0` | Host to bind to |
 | `SENTINEL_PORT` | No | `8080` | Port to listen on |
 | `REDIS_URL` | No | `redis://localhost:6379` | Redis connection URL |
-| `VERCEL_AI_GATEWAY_URL` | No | `https://gateway.ai.vercel.com/v1` | Gateway URL |
+| `VERCEL_AI_GATEWAY_URL` | No | `https://api.vercel.ai/v1` | Gateway URL |
 | `CACHE_TTL_SECONDS` | No | `300` | User limits cache TTL |
 | `JWT_CACHE_TTL_SECONDS` | No | `300` | JWT validation cache TTL |
 | `RUST_LOG` | No | `sentinel=info` | Log level |

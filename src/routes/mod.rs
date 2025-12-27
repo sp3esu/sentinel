@@ -15,6 +15,7 @@ pub mod health;
 pub mod metrics;
 pub mod models;
 pub mod passthrough;
+pub mod responses;
 
 use std::sync::Arc;
 
@@ -60,8 +61,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/embeddings", post(embeddings::embeddings))
         .route("/models", get(models::list_models))
         .route("/models/{model_id}", get(models::get_model))
+        // OpenAI Responses API - routes directly to OpenAI (not supported by Vercel AI Gateway)
+        .route("/responses", post(responses::responses_handler))
         // Pass-through handler for all other /v1/* endpoints
-        // Handles: audio, images, moderations, responses, assistants, etc.
+        // Handles: audio, images, moderations, assistants, etc.
         .fallback(passthrough::passthrough_handler)
         // Apply rate limiting (runs after auth)
         .layer(middleware::from_fn_with_state(

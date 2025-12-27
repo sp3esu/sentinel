@@ -26,6 +26,11 @@ pub struct Config {
     /// Vercel AI Gateway API key
     pub vercel_gateway_api_key: String,
 
+    /// OpenAI API URL (for endpoints not supported by Vercel AI Gateway)
+    pub openai_api_url: String,
+    /// OpenAI API key (optional - if not set, unsupported endpoints will fail)
+    pub openai_api_key: Option<String>,
+
     /// Cache TTL for user limits (in seconds)
     pub cache_ttl_seconds: u64,
     /// Cache TTL for JWT validation (in seconds)
@@ -51,9 +56,13 @@ impl Config {
                 .context("ZION_API_KEY must be set")?,
 
             vercel_gateway_url: env::var("VERCEL_AI_GATEWAY_URL")
-                .unwrap_or_else(|_| "https://gateway.ai.vercel.com/v1".to_string()),
+                .unwrap_or_else(|_| "https://api.vercel.ai/v1".to_string()),
             vercel_gateway_api_key: env::var("VERCEL_AI_GATEWAY_API_KEY")
                 .context("VERCEL_AI_GATEWAY_API_KEY must be set")?,
+
+            openai_api_url: env::var("OPENAI_API_URL")
+                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
+            openai_api_key: env::var("OPENAI_API_KEY").ok(),
 
             cache_ttl_seconds: env::var("CACHE_TTL_SECONDS")
                 .unwrap_or_else(|_| "300".to_string())

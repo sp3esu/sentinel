@@ -113,7 +113,7 @@ Optional (with defaults):
 - `SENTINEL_HOST` (default: `0.0.0.0`)
 - `SENTINEL_PORT` (default: `8080`)
 - `REDIS_URL` (default: `redis://localhost:6379`)
-- `VERCEL_AI_GATEWAY_URL` (default: `https://gateway.ai.vercel.com/v1`)
+- `VERCEL_AI_GATEWAY_URL` (default: `https://api.vercel.ai/v1`)
 - `CACHE_TTL_SECONDS` (default: `300`)
 - `JWT_CACHE_TTL_SECONDS` (default: `300`)
 - `RUST_LOG` (default: `sentinel=info,tower_http=info`)
