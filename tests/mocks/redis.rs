@@ -241,7 +241,7 @@ impl TestCacheKeys {
 pub struct RedisTestData;
 
 impl RedisTestData {
-    /// Sample cached user limits JSON
+    /// Sample cached user limits JSON (unified ai_usage format)
     pub fn cached_limits_json() -> String {
         serde_json::json!({
             "success": true,
@@ -250,13 +250,24 @@ impl RedisTestData {
                 "externalId": "test123",
                 "limits": [
                     {
-                        "limitId": "lmt_001",
-                        "name": "ai_input_tokens",
-                        "displayName": "AI Input Tokens",
-                        "unit": "tokens",
-                        "limit": 50000,
-                        "used": 5000,
-                        "remaining": 45000,
+                        "name": "ai_usage",
+                        "displayName": "AI Usage",
+                        "description": "AI usage limits",
+                        "aiInputTokens": {
+                            "limit": 50000,
+                            "used": 5000,
+                            "remaining": 45000
+                        },
+                        "aiOutputTokens": {
+                            "limit": 25000,
+                            "used": 2500,
+                            "remaining": 22500
+                        },
+                        "aiRequests": {
+                            "limit": 1000,
+                            "used": 100,
+                            "remaining": 900
+                        },
                         "resetPeriod": "MONTHLY"
                     }
                 ]
@@ -398,7 +409,8 @@ mod tests {
     #[test]
     fn test_sample_data() {
         let limits = RedisTestData::cached_limits_json();
-        assert!(limits.contains("ai_input_tokens"));
+        assert!(limits.contains("ai_usage"));
+        assert!(limits.contains("aiInputTokens"));
 
         let profile = RedisTestData::cached_profile_json();
         assert!(profile.contains("test@example.com"));

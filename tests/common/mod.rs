@@ -107,13 +107,24 @@ pub mod zion_mocks {
                     "externalId": constants::TEST_EXTERNAL_ID,
                     "limits": [
                         {
-                            "limitId": "limit_1",
-                            "name": "ai_input_tokens",
-                            "displayName": "AI Input Tokens",
-                            "unit": "tokens",
-                            "limit": 100000,
-                            "used": 1000,
-                            "remaining": 99000,
+                            "name": "ai_usage",
+                            "displayName": "AI Usage",
+                            "description": "AI usage limits",
+                            "aiInputTokens": {
+                                "limit": 100000,
+                                "used": 1000,
+                                "remaining": 99000
+                            },
+                            "aiOutputTokens": {
+                                "limit": 50000,
+                                "used": 500,
+                                "remaining": 49500
+                            },
+                            "aiRequests": {
+                                "limit": 1000,
+                                "used": 10,
+                                "remaining": 990
+                            },
                             "resetPeriod": "MONTHLY",
                             "periodStart": "2024-01-01T00:00:00Z",
                             "periodEnd": "2024-01-31T23:59:59Z"
