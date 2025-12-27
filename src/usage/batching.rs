@@ -152,6 +152,14 @@ impl BatchingUsageTracker {
         });
     }
 
+    /// Track a request without token usage - fire-and-forget
+    ///
+    /// Use this for endpoints that don't have token counts (audio, images, etc.)
+    /// Only increments the request count.
+    pub fn track_request_only(&self, external_id: String) {
+        self.track(external_id, 0, 0);
+    }
+
     /// Send a single increment to the channel (fire-and-forget)
     fn send_increment(&self, increment: UsageIncrement) {
         if let Err(e) = self.sender.try_send(increment) {
