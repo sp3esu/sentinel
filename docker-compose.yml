@@ -37,6 +37,9 @@ services:
       - ZION_API_URL=http://host.docker.internal:3000
       # Zion API key (from .env or override here)
       - ZION_API_KEY=${ZION_API_KEY}
+      # OpenAI API settings (required)
+      - OPENAI_API_URL=${OPENAI_API_URL:-https://api.openai.com/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     env_file:
       - .env
     depends_on:
