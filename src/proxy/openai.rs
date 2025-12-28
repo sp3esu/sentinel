@@ -351,18 +351,37 @@ impl AiProvider for OpenAIProvider {
         let content_length = response.content_length();
         ctx.log_upstream_response(status.as_u16(), content_length);
 
-        // If error status, log the error body before passing through
+        // If error status, log the error body and forward it to client
         if status.is_client_error() || status.is_server_error() {
+            let response_headers = response.headers().clone();
+
             // Read the error body to log it
             let error_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
             ctx.log_upstream_error_body(status.as_u16(), &error_body);
 
-            // Reconstruct the response with the body we already read
+            // Reconstruct the response with the body we already read, preserving relevant headers
             let axum_status = StatusCode::from_u16(status.as_u16())
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            let axum_response = Response::builder()
-                .status(axum_status)
-                .header("content-type", "application/json")
+
+            let mut builder = Response::builder().status(axum_status);
+
+            // Copy relevant headers from the upstream error response
+            for (name, value) in response_headers.iter() {
+                if !is_hop_by_hop_header(name) {
+                    if let Ok(header_name) = HeaderName::from_bytes(name.as_ref()) {
+                        builder = builder.header(header_name, value.as_bytes());
+                    }
+                }
+            }
+
+            debug!(
+                trace_id = %ctx.trace_id,
+                status = %axum_status,
+                body_len = error_body.len(),
+                "Forwarding error response to client"
+            );
+
+            let axum_response = builder
                 .body(Body::from(error_body))
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to build error response: {}", e)))?;
 
