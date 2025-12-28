@@ -96,20 +96,53 @@ impl RequestContext {
             url = %url,
             body_size = ?body_size,
             elapsed_ms = %self.elapsed_ms(),
-            "Sending request to upstream"
+            "➡ OUTGOING to {provider}: {url}",
+            provider = self.provider,
+            url = url,
         );
     }
 
     /// Log response received from upstream
     pub fn log_upstream_response(&self, status: u16, content_length: Option<u64>) {
-        info!(
+        let direction = "⬅ UPSTREAM RESPONSE";
+        if status >= 400 {
+            warn!(
+                trace_id = %self.trace_id,
+                provider = %self.provider,
+                endpoint = %self.endpoint,
+                status = %status,
+                content_length = ?content_length,
+                elapsed_ms = %self.elapsed_ms(),
+                "{direction}: error status from {provider}",
+                direction = direction,
+                provider = self.provider,
+            );
+        } else {
+            info!(
+                trace_id = %self.trace_id,
+                provider = %self.provider,
+                endpoint = %self.endpoint,
+                status = %status,
+                content_length = ?content_length,
+                elapsed_ms = %self.elapsed_ms(),
+                "{direction}: success",
+                direction = direction,
+            );
+        }
+    }
+
+    /// Log error response body from upstream provider
+    pub fn log_upstream_error_body(&self, status: u16, body: &str) {
+        error!(
             trace_id = %self.trace_id,
             provider = %self.provider,
             endpoint = %self.endpoint,
             status = %status,
-            content_length = ?content_length,
             elapsed_ms = %self.elapsed_ms(),
-            "Response received from upstream"
+            error_body = %body,
+            "⬅ UPSTREAM ERROR from {provider}: {body}",
+            provider = self.provider,
+            body = if body.len() > 500 { &body[..500] } else { body },
         );
     }
 

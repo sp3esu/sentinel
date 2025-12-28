@@ -348,7 +348,26 @@ impl AiProvider for OpenAIProvider {
         })?;
 
         let status = response.status();
-        ctx.log_upstream_response(status.as_u16(), response.content_length());
+        let content_length = response.content_length();
+        ctx.log_upstream_response(status.as_u16(), content_length);
+
+        // If error status, log the error body before passing through
+        if status.is_client_error() || status.is_server_error() {
+            // Read the error body to log it
+            let error_body = response.text().await.unwrap_or_else(|_| "Failed to read error body".to_string());
+            ctx.log_upstream_error_body(status.as_u16(), &error_body);
+
+            // Reconstruct the response with the body we already read
+            let axum_status = StatusCode::from_u16(status.as_u16())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let axum_response = Response::builder()
+                .status(axum_status)
+                .header("content-type", "application/json")
+                .body(Body::from(error_body))
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to build error response: {}", e)))?;
+
+            return Ok(axum_response);
+        }
 
         // Convert and return the response
         let axum_response = self.convert_response(response).await?;
