@@ -62,7 +62,7 @@ pub async fn responses_handler(
     // Track request count only (no token tracking for responses endpoint)
     state
         .batching_tracker
-        .track_request_only(user.external_id.clone());
+        .track_request_only(user.email.clone());
 
     info!(
         method = %method,

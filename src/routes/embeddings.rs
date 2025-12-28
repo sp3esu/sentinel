@@ -133,7 +133,7 @@ pub async fn embeddings(
     // Track usage in Zion (fire-and-forget)
     // Embeddings only have input tokens, no output tokens
     state.batching_tracker.track(
-        user.external_id.clone(),
+        user.email.clone(),
         response.usage.prompt_tokens as u64,
         0, // No output tokens for embeddings
     );

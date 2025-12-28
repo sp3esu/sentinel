@@ -75,7 +75,7 @@ pub async fn passthrough_handler(
     // Track request count only (no token tracking for pass-through endpoints)
     state
         .batching_tracker
-        .track_request_only(user.external_id.clone());
+        .track_request_only(user.email.clone());
 
     info!(
         method = %method,

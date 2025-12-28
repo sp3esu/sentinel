@@ -67,7 +67,7 @@ impl Default for BatchingConfig {
 /// A single usage increment to be batched (unified format)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UsageIncrement {
-    external_id: String,
+    email: String,
     input_tokens: i64,
     output_tokens: i64,
     requests: i64,
@@ -142,19 +142,19 @@ impl BatchingUsageTracker {
     ///
     /// This method never blocks and never fails. If the channel is full,
     /// the increment is dropped and logged.
-    pub fn track(&self, external_id: String, input_tokens: u64, output_tokens: u64) {
-        // Warn if external_id is empty - this will cause Zion API to reject the request
-        if external_id.is_empty() {
+    pub fn track(&self, email: String, input_tokens: u64, output_tokens: u64) {
+        // Warn if email is empty - this will cause Zion API to reject the request
+        if email.is_empty() {
             warn!(
                 input_tokens = input_tokens,
                 output_tokens = output_tokens,
-                "Attempted to track usage with empty external_id - this will fail"
+                "Attempted to track usage with empty email - this will fail"
             );
         }
 
         // Send unified usage increment
         self.send_increment(UsageIncrement {
-            external_id,
+            email,
             input_tokens: input_tokens as i64,
             output_tokens: output_tokens as i64,
             requests: 1,
@@ -165,12 +165,12 @@ impl BatchingUsageTracker {
     ///
     /// Use this for endpoints that don't have token counts (audio, images, etc.)
     /// Only increments the request count.
-    pub fn track_request_only(&self, external_id: String) {
-        // Warn if external_id is empty - this will cause Zion API to reject the request
-        if external_id.is_empty() {
-            warn!("Attempted to track request with empty external_id - this will fail");
+    pub fn track_request_only(&self, email: String) {
+        // Warn if email is empty - this will cause Zion API to reject the request
+        if email.is_empty() {
+            warn!("Attempted to track request with empty email - this will fail");
         }
-        self.track(external_id, 0, 0);
+        self.track(email, 0, 0);
     }
 
     /// Send a single increment to the channel (fire-and-forget)
@@ -179,7 +179,7 @@ impl BatchingUsageTracker {
             match e {
                 mpsc::error::TrySendError::Full(inc) => {
                     warn!(
-                        external_id = %inc.external_id,
+                        email = %inc.email,
                         input_tokens = inc.input_tokens,
                         output_tokens = inc.output_tokens,
                         requests = inc.requests,
@@ -188,7 +188,7 @@ impl BatchingUsageTracker {
                 }
                 mpsc::error::TrySendError::Closed(inc) => {
                     error!(
-                        external_id = %inc.external_id,
+                        email = %inc.email,
                         input_tokens = inc.input_tokens,
                         output_tokens = inc.output_tokens,
                         "Usage tracking channel closed, dropping increment"
@@ -223,7 +223,7 @@ impl BatchingUsageTracker {
         let mut consecutive_failures: u32 = 0;
         let mut circuit_opened_at: Option<std::time::Instant> = None;
 
-        // Aggregation buffer - keyed by external_id
+        // Aggregation buffer - keyed by email
         let mut buffer: HashMap<String, AggregatedUsage> = HashMap::new();
         let mut last_flush = std::time::Instant::now();
         let mut last_retry = std::time::Instant::now();
@@ -244,9 +244,9 @@ impl BatchingUsageTracker {
                 maybe_increment = receiver.recv() => {
                     match maybe_increment {
                         Some(increment) => {
-                            // Aggregate increment by external_id
+                            // Aggregate increment by email
                             buffer
-                                .entry(increment.external_id.clone())
+                                .entry(increment.email.clone())
                                 .or_default()
                                 .add(&increment);
 
@@ -382,8 +382,8 @@ impl BatchingUsageTracker {
         // Convert to batch increment items
         let batch_items: Vec<BatchIncrementItem> = increments
             .iter()
-            .map(|(external_id, usage)| BatchIncrementItem {
-                external_id: external_id.clone(),
+            .map(|(email, usage)| BatchIncrementItem {
+                email: email.clone(),
                 limit_name: "ai_usage".to_string(),
                 ai_input_tokens: if usage.input_tokens > 0 {
                     Some(usage.input_tokens)
@@ -423,12 +423,12 @@ impl BatchingUsageTracker {
                     // Persist failed items to Redis for retry
                     for item_result in result.results.iter().filter(|r| !r.success) {
                         // Find the original usage data
-                        if let Some((external_id, usage)) = increments
+                        if let Some((email, usage)) = increments
                             .iter()
-                            .find(|(id, _)| *id == item_result.external_id)
+                            .find(|(e, _)| *e == item_result.email)
                         {
                             let increment = UsageIncrement {
-                                external_id: external_id.clone(),
+                                email: email.clone(),
                                 input_tokens: usage.input_tokens,
                                 output_tokens: usage.output_tokens,
                                 requests: usage.requests,
@@ -438,7 +438,7 @@ impl BatchingUsageTracker {
                             {
                                 error!(
                                     error = %redis_err,
-                                    external_id = %external_id,
+                                    email = %email,
                                     "Failed to persist failed increment to Redis"
                                 );
                             }
@@ -462,9 +462,9 @@ impl BatchingUsageTracker {
                 );
 
                 // Persist all to Redis for retry
-                for (external_id, usage) in &increments {
+                for (email, usage) in &increments {
                     let increment = UsageIncrement {
-                        external_id: external_id.clone(),
+                        email: email.clone(),
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
                         requests: usage.requests,
@@ -473,7 +473,7 @@ impl BatchingUsageTracker {
                     {
                         error!(
                             error = %redis_err,
-                            external_id = %external_id,
+                            email = %email,
                             "Failed to persist failed increment to Redis"
                         );
                     }
@@ -512,7 +512,7 @@ impl BatchingUsageTracker {
             .await?;
 
         debug!(
-            external_id = %increment.external_id,
+            email = %increment.email,
             input_tokens = increment.input_tokens,
             output_tokens = increment.output_tokens,
             requests = increment.requests,
@@ -592,7 +592,7 @@ impl BatchingUsageTracker {
             // Try to send to Zion using unified increment API
             match zion_client
                 .increment_usage(
-                    &increment.external_id,
+                    &increment.email,
                     increment.input_tokens,
                     increment.output_tokens,
                     increment.requests,
@@ -603,7 +603,7 @@ impl BatchingUsageTracker {
                     success_count += 1;
                     *consecutive_failures = 0;
                     debug!(
-                        external_id = %increment.external_id,
+                        email = %increment.email,
                         input_tokens = increment.input_tokens,
                         output_tokens = increment.output_tokens,
                         requests = increment.requests,
@@ -615,7 +615,7 @@ impl BatchingUsageTracker {
                     *consecutive_failures += 1;
 
                     warn!(
-                        external_id = %increment.external_id,
+                        email = %increment.email,
                         input_tokens = increment.input_tokens,
                         output_tokens = increment.output_tokens,
                         error = %e,
@@ -712,7 +712,7 @@ mod tests {
     fn test_aggregated_usage_add() {
         let mut usage = AggregatedUsage::default();
         let increment = UsageIncrement {
-            external_id: "user1".to_string(),
+            email: "user1@example.com".to_string(),
             input_tokens: 100,
             output_tokens: 50,
             requests: 1,
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn test_usage_increment_serialization() {
         let increment = UsageIncrement {
-            external_id: "user123".to_string(),
+            email: "user123@example.com".to_string(),
             input_tokens: 100,
             output_tokens: 50,
             requests: 1,
@@ -770,7 +770,7 @@ mod tests {
         let json = serde_json::to_string(&increment).unwrap();
         let deserialized: UsageIncrement = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.external_id, "user123");
+        assert_eq!(deserialized.email, "user123@example.com");
         assert_eq!(deserialized.input_tokens, 100);
         assert_eq!(deserialized.output_tokens, 50);
         assert_eq!(deserialized.requests, 1);
@@ -792,47 +792,47 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregation_by_external_id() {
+    fn test_aggregation_by_email() {
         use std::collections::HashMap;
 
         let mut buffer: HashMap<String, AggregatedUsage> = HashMap::new();
 
         // First increment for user1
         let inc1 = UsageIncrement {
-            external_id: "user1".to_string(),
+            email: "user1@example.com".to_string(),
             input_tokens: 100,
             output_tokens: 50,
             requests: 1,
         };
-        buffer.entry(inc1.external_id.clone()).or_default().add(&inc1);
+        buffer.entry(inc1.email.clone()).or_default().add(&inc1);
 
         // Second increment for user1 (should aggregate)
         let inc2 = UsageIncrement {
-            external_id: "user1".to_string(),
+            email: "user1@example.com".to_string(),
             input_tokens: 200,
             output_tokens: 100,
             requests: 1,
         };
-        buffer.entry(inc2.external_id.clone()).or_default().add(&inc2);
+        buffer.entry(inc2.email.clone()).or_default().add(&inc2);
 
         // Increment for user2
         let inc3 = UsageIncrement {
-            external_id: "user2".to_string(),
+            email: "user2@example.com".to_string(),
             input_tokens: 50,
             output_tokens: 25,
             requests: 1,
         };
-        buffer.entry(inc3.external_id.clone()).or_default().add(&inc3);
+        buffer.entry(inc3.email.clone()).or_default().add(&inc3);
 
         // Verify aggregation
         assert_eq!(buffer.len(), 2);
 
-        let user1_usage = buffer.get("user1").unwrap();
+        let user1_usage = buffer.get("user1@example.com").unwrap();
         assert_eq!(user1_usage.input_tokens, 300);
         assert_eq!(user1_usage.output_tokens, 150);
         assert_eq!(user1_usage.requests, 2);
 
-        let user2_usage = buffer.get("user2").unwrap();
+        let user2_usage = buffer.get("user2@example.com").unwrap();
         assert_eq!(user2_usage.input_tokens, 50);
         assert_eq!(user2_usage.output_tokens, 25);
         assert_eq!(user2_usage.requests, 1);

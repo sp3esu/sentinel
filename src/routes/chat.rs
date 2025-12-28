@@ -217,7 +217,7 @@ async fn handle_non_streaming_chat(
 
         // Track usage in Zion (fire-and-forget, never blocks)
         state.batching_tracker.track(
-            user.external_id.clone(),
+            user.email.clone(),
             usage.prompt_tokens as u64,
             usage.completion_tokens as u64,
         );

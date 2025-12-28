@@ -239,12 +239,12 @@ impl MockZionServer {
         &self,
         processed: i32,
         failed: i32,
-        failed_external_ids: Vec<&str>,
+        failed_emails: Vec<&str>,
     ) {
-        let results: Vec<BatchIncrementResultMock> = failed_external_ids
+        let results: Vec<BatchIncrementResultMock> = failed_emails
             .into_iter()
-            .map(|id| BatchIncrementResultMock {
-                external_id: id.to_string(),
+            .map(|email| BatchIncrementResultMock {
+                email: email.to_string(),
                 success: false,
                 error: Some("Failed to increment".to_string()),
             })
@@ -412,7 +412,7 @@ pub struct ExternalLimitsResponseMock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncrementUsageRequestMock {
-    pub external_id: String,
+    pub email: String,
     pub limit_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_input_tokens: Option<i64>,
@@ -434,7 +434,7 @@ pub struct IncrementUsageResponseMock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchIncrementItemMock {
-    pub external_id: String,
+    pub email: String,
     pub limit_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_input_tokens: Option<i64>,
@@ -455,7 +455,7 @@ pub struct BatchIncrementRequestMock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchIncrementResultMock {
-    pub external_id: String,
+    pub email: String,
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

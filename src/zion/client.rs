@@ -90,10 +90,10 @@ impl ZionClient {
     /// Increment AI usage (unified format with all 3 metrics)
     ///
     /// Sends a single request to increment input tokens, output tokens, and request count.
-    #[instrument(skip(self), fields(external_id = %external_id, input_tokens, output_tokens, requests))]
+    #[instrument(skip(self), fields(email = %email, input_tokens, output_tokens, requests))]
     pub async fn increment_usage(
         &self,
-        external_id: &str,
+        email: &str,
         input_tokens: i64,
         output_tokens: i64,
         requests: i64,
@@ -101,7 +101,7 @@ impl ZionClient {
         let url = format!("{}/api/v1/usage/external/increment", self.base_url);
 
         let request = IncrementUsageRequest {
-            external_id: external_id.to_string(),
+            email: email.to_string(),
             limit_name: "ai_usage".to_string(),
             ai_input_tokens: if input_tokens > 0 { Some(input_tokens) } else { None },
             ai_output_tokens: if output_tokens > 0 { Some(output_tokens) } else { None },

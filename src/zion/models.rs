@@ -62,7 +62,7 @@ pub struct ExternalLimitsData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncrementUsageRequest {
-    pub external_id: String,
+    pub email: String,
     pub limit_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_input_tokens: Option<i64>,
@@ -84,7 +84,7 @@ pub struct IncrementUsageResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchIncrementItem {
-    pub external_id: String,
+    pub email: String,
     pub limit_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_input_tokens: Option<i64>,
@@ -105,7 +105,7 @@ pub struct BatchIncrementRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchIncrementResult {
-    pub external_id: String,
+    pub email: String,
     pub limit_name: String,
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn test_serialize_increment_request() {
         let request = IncrementUsageRequest {
-            external_id: "user123".to_string(),
+            email: "user123@example.com".to_string(),
             limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(100),
             ai_output_tokens: Some(50),
@@ -425,7 +425,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("\"externalId\":\"user123\""));
+        assert!(json.contains("\"email\":\"user123@example.com\""));
         assert!(json.contains("\"limitName\":\"ai_usage\""));
         assert!(json.contains("\"aiInputTokens\":100"));
         assert!(json.contains("\"aiOutputTokens\":50"));
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn test_serialize_increment_request_partial() {
         let request = IncrementUsageRequest {
-            external_id: "user123".to_string(),
+            email: "user123@example.com".to_string(),
             limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(100),
             ai_output_tokens: None,
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn test_deserialize_increment_request() {
         let json = r#"{
-            "externalId": "ext_abc123",
+            "email": "user@example.com",
             "limitName": "ai_usage",
             "aiInputTokens": 1000,
             "aiOutputTokens": 500,
@@ -459,7 +459,7 @@ mod tests {
         }"#;
 
         let request: IncrementUsageRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.external_id, "ext_abc123");
+        assert_eq!(request.email, "user@example.com");
         assert_eq!(request.limit_name, "ai_usage");
         assert_eq!(request.ai_input_tokens, Some(1000));
         assert_eq!(request.ai_output_tokens, Some(500));
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn test_increment_request_clone() {
         let request = IncrementUsageRequest {
-            external_id: "user123".to_string(),
+            email: "user123@example.com".to_string(),
             limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(100),
             ai_output_tokens: Some(50),
@@ -477,7 +477,7 @@ mod tests {
         };
 
         let cloned = request.clone();
-        assert_eq!(request.external_id, cloned.external_id);
+        assert_eq!(request.email, cloned.email);
         assert_eq!(request.ai_input_tokens, cloned.ai_input_tokens);
     }
 
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn test_batch_increment_item_serialize() {
         let item = BatchIncrementItem {
-            external_id: "user123".to_string(),
+            email: "user123@example.com".to_string(),
             limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(1000),
             ai_output_tokens: Some(500),
@@ -496,7 +496,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&item).unwrap();
-        assert!(json.contains("\"externalId\":\"user123\""));
+        assert!(json.contains("\"email\":\"user123@example.com\""));
         assert!(json.contains("\"limitName\":\"ai_usage\""));
         assert!(json.contains("\"aiInputTokens\":1000"));
     }
@@ -506,14 +506,14 @@ mod tests {
         let request = BatchIncrementRequest {
             increments: vec![
                 BatchIncrementItem {
-                    external_id: "user1".to_string(),
+                    email: "user1@example.com".to_string(),
                     limit_name: "ai_usage".to_string(),
                     ai_input_tokens: Some(1000),
                     ai_output_tokens: Some(500),
                     ai_requests: Some(1),
                 },
                 BatchIncrementItem {
-                    external_id: "user2".to_string(),
+                    email: "user2@example.com".to_string(),
                     limit_name: "ai_usage".to_string(),
                     ai_input_tokens: Some(2000),
                     ai_output_tokens: None,
@@ -524,8 +524,8 @@ mod tests {
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"increments\""));
-        assert!(json.contains("\"user1\""));
-        assert!(json.contains("\"user2\""));
+        assert!(json.contains("\"user1@example.com\""));
+        assert!(json.contains("\"user2@example.com\""));
     }
 
     #[test]
@@ -537,7 +537,7 @@ mod tests {
                 "failed": 1,
                 "results": [
                     {
-                        "externalId": "user1",
+                        "email": "user1@example.com",
                         "limitName": "ai_usage",
                         "success": true,
                         "aiInputTokens": {"newValue": 1100, "limit": 100000},
@@ -545,7 +545,7 @@ mod tests {
                         "aiRequests": {"newValue": 11, "limit": 1000}
                     },
                     {
-                        "externalId": "user2",
+                        "email": "user2@example.com",
                         "limitName": "ai_usage",
                         "success": false,
                         "error": "User not found"
@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn test_increment_request_roundtrip() {
         let original = IncrementUsageRequest {
-            external_id: "ext_123".to_string(),
+            email: "user@example.com".to_string(),
             limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(1000),
             ai_output_tokens: Some(500),
@@ -881,7 +881,7 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         let deserialized: IncrementUsageRequest = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(original.external_id, deserialized.external_id);
+        assert_eq!(original.email, deserialized.email);
         assert_eq!(original.limit_name, deserialized.limit_name);
         assert_eq!(original.ai_input_tokens, deserialized.ai_input_tokens);
         assert_eq!(original.ai_output_tokens, deserialized.ai_output_tokens);
