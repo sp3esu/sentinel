@@ -143,6 +143,15 @@ impl BatchingUsageTracker {
     /// This method never blocks and never fails. If the channel is full,
     /// the increment is dropped and logged.
     pub fn track(&self, external_id: String, input_tokens: u64, output_tokens: u64) {
+        // Warn if external_id is empty - this will cause Zion API to reject the request
+        if external_id.is_empty() {
+            warn!(
+                input_tokens = input_tokens,
+                output_tokens = output_tokens,
+                "Attempted to track usage with empty external_id - this will fail"
+            );
+        }
+
         // Send unified usage increment
         self.send_increment(UsageIncrement {
             external_id,
@@ -157,6 +166,10 @@ impl BatchingUsageTracker {
     /// Use this for endpoints that don't have token counts (audio, images, etc.)
     /// Only increments the request count.
     pub fn track_request_only(&self, external_id: String) {
+        // Warn if external_id is empty - this will cause Zion API to reject the request
+        if external_id.is_empty() {
+            warn!("Attempted to track request with empty external_id - this will fail");
+        }
         self.track(external_id, 0, 0);
     }
 

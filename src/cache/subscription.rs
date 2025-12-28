@@ -104,7 +104,12 @@ impl SubscriptionCache {
 
         // Try cache first
         if let Some(profile) = self.cache.get::<UserProfile>(&cache_key).await? {
-            debug!("Cache hit for JWT validation");
+            debug!(
+                user_id = %profile.id,
+                email = %profile.email,
+                external_id = ?profile.external_id,
+                "Cache hit for JWT validation"
+            );
             return Ok(profile);
         }
 
@@ -112,6 +117,13 @@ impl SubscriptionCache {
 
         // Validate with Zion API
         let profile = self.zion_client.validate_jwt(jwt).await?;
+
+        debug!(
+            user_id = %profile.id,
+            email = %profile.email,
+            external_id = ?profile.external_id,
+            "JWT validated with Zion - caching result"
+        );
 
         // Cache the result
         self.cache

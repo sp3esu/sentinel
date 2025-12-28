@@ -177,7 +177,12 @@ impl ZionClient {
 
         let request = BatchIncrementRequest { increments: items };
 
-        debug!(url = %url, "Sending batch increment to Zion");
+        // Log the full request payload for debugging
+        if let Ok(payload) = serde_json::to_string(&request) {
+            debug!(url = %url, payload = %payload, "Sending batch increment to Zion");
+        } else {
+            debug!(url = %url, "Sending batch increment to Zion");
+        }
 
         let response = self
             .client

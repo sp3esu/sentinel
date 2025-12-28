@@ -81,6 +81,16 @@ pub async fn auth_middleware(
     // Extract external_id, defaulting to user_id if not set
     let external_id = profile.external_id.clone().unwrap_or_else(|| profile.id.clone());
 
+    // Warn if external_id is empty - this will cause usage tracking to fail
+    if external_id.is_empty() {
+        warn!(
+            user_id = %profile.id,
+            email = %profile.email,
+            external_id_from_profile = ?profile.external_id,
+            "User has empty external_id - usage tracking will fail"
+        );
+    }
+
     // Create authenticated user from profile
     let user = AuthenticatedUser {
         user_id: profile.id,
@@ -91,6 +101,7 @@ pub async fn auth_middleware(
     debug!(
         user_id = %user.user_id,
         external_id = %user.external_id,
+        email = %user.email,
         "User authenticated successfully"
     );
 
