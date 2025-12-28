@@ -1,70 +1,341 @@
-//! OpenAI direct proxy
+//! OpenAI provider implementation
 //!
-//! Handles request forwarding directly to OpenAI API for endpoints
-//! not supported by Vercel AI Gateway (e.g., /responses).
+//! Handles request forwarding to OpenAI's API with comprehensive logging
+//! and secure header handling.
 
+use async_trait::async_trait;
 use axum::body::Body;
-use axum::http::{header, HeaderName, Method, Response, StatusCode};
+use axum::http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::BodyExt;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
-use tracing::{debug, error, info, instrument};
+use reqwest::header::HeaderMap;
+use serde::{de::DeserializeOwned, Serialize};
+use tracing::{debug, instrument};
 
-use crate::{config::Config, error::{AppError, AppResult}};
+use crate::config::Config;
+use crate::error::{AppError, AppResult};
+use crate::proxy::headers::{build_default_headers, build_proxy_headers, is_hop_by_hop_header};
+use crate::proxy::logging::RequestContext;
+use crate::proxy::provider::{AiProvider, ByteStream};
 
-/// OpenAI direct client for endpoints not supported by Vercel AI Gateway
-pub struct OpenAIClient {
+/// OpenAI API provider
+///
+/// Implements the AiProvider trait for OpenAI's API, handling all communication
+/// with proper logging and secure header filtering.
+pub struct OpenAIProvider {
     client: reqwest::Client,
     base_url: String,
-    api_key: Option<String>,
+    api_key: String,
 }
 
-impl OpenAIClient {
-    /// Create a new OpenAI client
+impl OpenAIProvider {
+    /// Create a new OpenAI provider
+    ///
+    /// # Panics
+    ///
+    /// Panics if OPENAI_API_KEY is not configured.
     pub fn new(client: reqwest::Client, config: &Config) -> Self {
+        let api_key = config
+            .openai_api_key
+            .clone()
+            .expect("OPENAI_API_KEY must be configured");
+
         Self {
             client,
             base_url: config.openai_api_url.clone(),
-            api_key: config.openai_api_key.clone(),
+            api_key,
         }
     }
 
-    /// Check if the client is configured with an API key
-    pub fn is_configured(&self) -> bool {
-        self.api_key.is_some()
+    /// Make a POST request (non-streaming)
+    async fn post<T: Serialize, R: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        body: &T,
+        incoming_headers: &HeaderMap,
+        ctx: &RequestContext,
+    ) -> AppResult<R> {
+        let url = format!("{}{}", self.base_url, endpoint);
+
+        let headers = build_proxy_headers(incoming_headers, &self.api_key);
+        ctx.log_headers_prepared(headers.len());
+        ctx.log_upstream_request(&url, None);
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| {
+                ctx.log_connection_error(&e.to_string(), &url);
+                e
+            })?;
+
+        let status = response.status();
+        let content_length = response.content_length();
+        ctx.log_upstream_response(status.as_u16(), content_length);
+
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            ctx.log_error(&format!("OpenAI error {}: {}", status, text));
+            return Err(AppError::UpstreamError(format!(
+                "OpenAI error {}: {}",
+                status, text
+            )));
+        }
+
+        let body_text = response.text().await?;
+        debug!(
+            trace_id = %ctx.trace_id,
+            body_len = body_text.len(),
+            "Response body received"
+        );
+
+        let result: R = serde_json::from_str(&body_text).map_err(|e| {
+            ctx.log_error(&format!("Failed to parse response: {}", e));
+            AppError::UpstreamError(format!("Failed to parse response: {}", e))
+        })?;
+
+        ctx.log_request_complete(None);
+        Ok(result)
     }
 
-    /// Forward a raw request to OpenAI
-    #[instrument(skip(self, incoming_headers, body), fields(method = %method, path = %path))]
-    pub async fn forward_raw(
+    /// Make a POST request with streaming response
+    async fn post_stream<T: Serialize>(
+        &self,
+        endpoint: &str,
+        body: &T,
+        incoming_headers: &HeaderMap,
+        ctx: &RequestContext,
+    ) -> AppResult<ByteStream> {
+        let url = format!("{}{}", self.base_url, endpoint);
+
+        let headers = build_proxy_headers(incoming_headers, &self.api_key);
+        ctx.log_headers_prepared(headers.len());
+        ctx.log_upstream_request(&url, None);
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| {
+                ctx.log_connection_error(&e.to_string(), &url);
+                e
+            })?;
+
+        let status = response.status();
+        ctx.log_upstream_response(status.as_u16(), None);
+
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            ctx.log_error(&format!("OpenAI error {}: {}", status, text));
+            return Err(AppError::UpstreamError(format!(
+                "OpenAI error {}: {}",
+                status, text
+            )));
+        }
+
+        ctx.log_stream_started();
+        Ok(Box::pin(response.bytes_stream()))
+    }
+
+    /// Make a GET request
+    async fn get<R: DeserializeOwned>(&self, endpoint: &str, ctx: &RequestContext) -> AppResult<R> {
+        let url = format!("{}{}", self.base_url, endpoint);
+
+        let headers = build_default_headers(&self.api_key);
+        ctx.log_headers_prepared(headers.len());
+        ctx.log_upstream_request(&url, None);
+
+        let response = self
+            .client
+            .get(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| {
+                ctx.log_connection_error(&e.to_string(), &url);
+                e
+            })?;
+
+        let status = response.status();
+        let content_length = response.content_length();
+        ctx.log_upstream_response(status.as_u16(), content_length);
+
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            ctx.log_error(&format!("OpenAI error {}: {}", status, text));
+            return Err(AppError::UpstreamError(format!(
+                "OpenAI error {}: {}",
+                status, text
+            )));
+        }
+
+        let body_text = response.text().await?;
+        let result: R = serde_json::from_str(&body_text).map_err(|e| {
+            ctx.log_error(&format!("Failed to parse response: {}", e));
+            AppError::UpstreamError(format!("Failed to parse response: {}", e))
+        })?;
+
+        ctx.log_request_complete(None);
+        Ok(result)
+    }
+
+    /// Convert reqwest Response to axum Response
+    async fn convert_response(&self, response: reqwest::Response) -> AppResult<Response<Body>> {
+        let status = StatusCode::from_u16(response.status().as_u16())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let response_headers = response.headers().clone();
+
+        // Stream the response body
+        let body = Body::from_stream(response.bytes_stream());
+
+        // Build axum response
+        let mut builder = Response::builder().status(status);
+
+        // Copy headers, filtering out hop-by-hop headers
+        for (name, value) in response_headers.iter() {
+            if !is_hop_by_hop_header(name) {
+                if let Ok(header_name) = HeaderName::from_bytes(name.as_ref()) {
+                    builder = builder.header(header_name, value.as_bytes());
+                }
+            }
+        }
+
+        builder
+            .body(body)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to build response: {}", e)))
+    }
+}
+
+#[async_trait]
+impl AiProvider for OpenAIProvider {
+    fn name(&self) -> &'static str {
+        "openai"
+    }
+
+    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "chat/completions"))]
+    async fn chat_completions<T, R>(
+        &self,
+        request: &T,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<R>
+    where
+        T: Serialize + Send + Sync,
+        R: DeserializeOwned,
+    {
+        let ctx = RequestContext::new(self.name(), "/v1/chat/completions");
+        ctx.log_request_start();
+        self.post("/chat/completions", request, incoming_headers, &ctx)
+            .await
+    }
+
+    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "chat/completions", streaming = true))]
+    async fn chat_completions_stream<T>(
+        &self,
+        request: &T,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<ByteStream>
+    where
+        T: Serialize + Send + Sync,
+    {
+        let ctx = RequestContext::new(self.name(), "/v1/chat/completions").with_streaming(true);
+        ctx.log_request_start();
+        self.post_stream("/chat/completions", request, incoming_headers, &ctx)
+            .await
+    }
+
+    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "completions"))]
+    async fn completions<T, R>(&self, request: &T, incoming_headers: &HeaderMap) -> AppResult<R>
+    where
+        T: Serialize + Send + Sync,
+        R: DeserializeOwned,
+    {
+        let ctx = RequestContext::new(self.name(), "/v1/completions");
+        ctx.log_request_start();
+        self.post("/completions", request, incoming_headers, &ctx)
+            .await
+    }
+
+    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "completions", streaming = true))]
+    async fn completions_stream<T>(
+        &self,
+        request: &T,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<ByteStream>
+    where
+        T: Serialize + Send + Sync,
+    {
+        let ctx = RequestContext::new(self.name(), "/v1/completions").with_streaming(true);
+        ctx.log_request_start();
+        self.post_stream("/completions", request, incoming_headers, &ctx)
+            .await
+    }
+
+    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "embeddings"))]
+    async fn embeddings<T, R>(&self, request: &T, incoming_headers: &HeaderMap) -> AppResult<R>
+    where
+        T: Serialize + Send + Sync,
+        R: DeserializeOwned,
+    {
+        let ctx = RequestContext::new(self.name(), "/v1/embeddings");
+        ctx.log_request_start();
+        self.post("/embeddings", request, incoming_headers, &ctx)
+            .await
+    }
+
+    #[instrument(skip(self), fields(provider = "openai", endpoint = "models"))]
+    async fn list_models<R>(&self) -> AppResult<R>
+    where
+        R: DeserializeOwned,
+    {
+        let ctx = RequestContext::new(self.name(), "/v1/models");
+        ctx.log_request_start();
+        self.get("/models", &ctx).await
+    }
+
+    #[instrument(skip(self), fields(provider = "openai", endpoint = "models"))]
+    async fn get_model<R>(&self, model_id: &str) -> AppResult<R>
+    where
+        R: DeserializeOwned,
+    {
+        let ctx = RequestContext::new(self.name(), &format!("/v1/models/{}", model_id));
+        ctx.log_request_start();
+        self.get(&format!("/models/{}", model_id), &ctx).await
+    }
+
+    #[instrument(skip(self, incoming_headers, body), fields(provider = "openai", method = %method, path = %path))]
+    async fn forward_raw(
         &self,
         method: Method,
         path: &str,
         incoming_headers: HeaderMap,
         body: Body,
     ) -> AppResult<Response<Body>> {
-        let api_key = self.api_key.as_ref().ok_or_else(|| {
-            AppError::ServiceUnavailable("OPENAI_API_KEY is not configured".to_string())
-        })?;
+        let ctx = RequestContext::new(self.name(), path);
+        ctx.log_request_start();
 
         let url = format!("{}{}", self.base_url, path);
-        info!(url = %url, method = %method, "Forwarding request directly to OpenAI");
 
-        // Build headers for the proxy request
-        let headers = self.build_proxy_headers(&incoming_headers, api_key);
+        // Build headers using the secure filtering
+        let headers = build_proxy_headers(&incoming_headers, &self.api_key);
+        ctx.log_headers_prepared(headers.len());
 
         // Convert axum Body to bytes for reqwest
         let body_bytes = body
             .collect()
             .await
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read request body: {}", e)))?
+            .map_err(|e| {
+                ctx.log_error(&format!("Failed to read request body: {}", e));
+                AppError::Internal(anyhow::anyhow!("Failed to read request body: {}", e))
+            })?
             .to_bytes();
 
-        debug!(
-            url = %url,
-            method = %method,
-            body_len = body_bytes.len(),
-            "Sending request to OpenAI"
-        );
+        ctx.log_upstream_request(&url, Some(body_bytes.len()));
 
         // Build the request
         let mut request_builder = self.client.request(
@@ -80,80 +351,21 @@ impl OpenAIClient {
         }
 
         let response = request_builder.send().await.map_err(|e| {
-            error!(url = %url, error = %e, "Failed to send request to OpenAI");
+            ctx.log_connection_error(&e.to_string(), &url);
             e
         })?;
 
         let status = response.status();
-        debug!(
-            url = %url,
-            status = %status,
-            "Received response from OpenAI"
-        );
+        ctx.log_upstream_response(status.as_u16(), response.content_length());
 
-        // Convert reqwest response to axum response
-        self.convert_response(response).await
-    }
+        // Convert and return the response
+        let axum_response = self.convert_response(response).await?;
+        ctx.log_request_complete(None);
 
-    /// Build headers for proxy request
-    fn build_proxy_headers(&self, incoming: &HeaderMap, api_key: &str) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-
-        // Copy specific headers from incoming request
-        let headers_to_copy = [
-            header::CONTENT_TYPE,
-            header::ACCEPT,
-            header::USER_AGENT,
-        ];
-
-        for header_name in headers_to_copy {
-            if let Some(value) = incoming.get(&header_name) {
-                headers.insert(header_name, value.clone());
-            }
-        }
-
-        // Set authorization with OpenAI API key
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", api_key))
-                .expect("Invalid API key"),
-        );
-
-        headers
-    }
-
-    /// Convert reqwest response to axum response
-    async fn convert_response(
-        &self,
-        response: reqwest::Response,
-    ) -> AppResult<Response<Body>> {
-        let status = StatusCode::from_u16(response.status().as_u16())
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-
-        let mut builder = Response::builder().status(status);
-
-        // Copy headers, filtering out hop-by-hop headers
-        let hop_by_hop: &[HeaderName] = &[
-            header::CONNECTION,
-            header::PROXY_AUTHENTICATE,
-            header::PROXY_AUTHORIZATION,
-            header::TE,
-            header::TRAILER,
-            header::TRANSFER_ENCODING,
-            header::UPGRADE,
-        ];
-
-        for (name, value) in response.headers() {
-            if !hop_by_hop.contains(name) {
-                builder = builder.header(name.clone(), value.clone());
-            }
-        }
-
-        // Stream the body
-        let body = Body::from_stream(response.bytes_stream());
-
-        builder
-            .body(body)
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to build response: {}", e)))
+        Ok(axum_response)
     }
 }
+
+// Keep the old OpenAIClient for backwards compatibility during migration
+// TODO: Remove after all routes are migrated to use AiProvider trait
+pub use OpenAIProvider as OpenAIClient;

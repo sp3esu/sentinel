@@ -13,6 +13,6 @@ pub mod vercel_gateway;
 
 pub use headers::{build_default_headers, build_proxy_headers, is_hop_by_hop_header, SAFE_HEADERS_TO_FORWARD};
 pub use logging::RequestContext;
-pub use openai::OpenAIClient;
+pub use openai::{OpenAIClient, OpenAIProvider};
 pub use provider::{AiProvider, ByteStream};
 pub use vercel_gateway::VercelGateway;
