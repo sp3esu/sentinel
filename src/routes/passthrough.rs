@@ -1,6 +1,6 @@
 //! Pass-through proxy handler
 //!
-//! Generic handler that forwards all unmatched /v1/* requests to the Vercel AI Gateway
+//! Generic handler that forwards all unmatched /v1/* requests to the AI provider
 //! without parsing the request body. Used for endpoints that don't require token tracking
 //! (audio, images, moderations, etc.).
 
@@ -18,7 +18,6 @@ use tracing::info;
 use crate::{
     error::AppError,
     middleware::auth::AuthenticatedUser,
-    proxy::VercelGateway,
     routes::metrics::record_request,
     AppState,
 };
@@ -27,7 +26,7 @@ use crate::{
 ///
 /// This handler:
 /// 1. Authenticates the user (via middleware)
-/// 2. Forwards the request body unchanged to Vercel AI Gateway
+/// 2. Forwards the request body unchanged to the AI provider
 /// 3. Streams the response back to the client
 /// 4. Tracks usage (request count only, no token tracking)
 pub async fn passthrough_handler(
@@ -41,7 +40,7 @@ pub async fn passthrough_handler(
     let start_time = Instant::now();
     let path = uri.path().to_string();
 
-    // Strip /v1 prefix since the gateway base URL already includes it
+    // Strip /v1 prefix since the provider base URL already includes it
     let forward_path = path
         .strip_prefix("/v1")
         .unwrap_or(&path)
@@ -55,14 +54,12 @@ pub async fn passthrough_handler(
         "Processing pass-through request"
     );
 
-    // Create gateway client
-    let gateway = VercelGateway::new(state.http_client.clone(), &state.config);
-
     // Extract body from request
     let body = request.into_body();
 
-    // Forward the request
-    let response = gateway
+    // Forward the request using the AI provider
+    let response = state
+        .ai_provider
         .forward_raw(method.clone(), &forward_path, headers, body)
         .await?;
 

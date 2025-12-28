@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Extension, Json,
 };
@@ -18,7 +18,6 @@ use tracing::{debug, info};
 use crate::{
     error::AppError,
     middleware::auth::AuthenticatedUser,
-    proxy::VercelGateway,
     routes::metrics::{record_request, record_tokens},
     AppState,
 };
@@ -94,11 +93,12 @@ pub struct EmbeddingResponse {
 /// Handle embedding requests
 ///
 /// This endpoint:
-/// 1. Forwards the request to Vercel AI Gateway
+/// 1. Forwards the request to the AI provider
 /// 2. Tracks token usage (input tokens only, no output tokens for embeddings)
 /// 3. Returns the embedding response
 pub async fn embeddings(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Extension(user): Extension<AuthenticatedUser>,
     Json(request): Json<EmbeddingRequest>,
 ) -> Result<Response, AppError> {
@@ -111,11 +111,19 @@ pub async fn embeddings(
         "Processing embeddings request"
     );
 
-    // Create gateway client
-    let gateway = VercelGateway::new(state.http_client.clone(), &state.config);
+    // Convert request to Value for the provider
+    let request_value = serde_json::to_value(&request)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {}", e)))?;
 
-    // Forward request to gateway
-    let response: EmbeddingResponse = gateway.embeddings(&request).await?;
+    // Forward request to provider
+    let response_value = state
+        .ai_provider
+        .embeddings(request_value, &headers)
+        .await?;
+
+    // Parse the response
+    let response: EmbeddingResponse = serde_json::from_value(response_value)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse response: {}", e)))?;
 
     // Record metrics
     let duration = start_time.elapsed().as_secs_f64();

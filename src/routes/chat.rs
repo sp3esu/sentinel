@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use crate::{
     error::AppError,
     middleware::auth::AuthenticatedUser,
-    proxy::VercelGateway,
+    proxy::AiProvider,
     routes::metrics::{record_request, record_tokens},
     AppState,
 };
@@ -136,7 +136,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
 /// Handle chat completion requests
 ///
 /// This endpoint is compatible with OpenAI's chat completions API.
-/// It proxies requests to the Vercel AI Gateway after checking user quotas.
+/// It proxies requests to the AI provider after checking user quotas.
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -176,32 +176,36 @@ pub async fn chat_completions(
         "Processing chat completion request"
     );
 
-    // Create gateway client
-    let gateway = VercelGateway::new(state.http_client.clone(), &state.config);
-
     if is_streaming {
         // Handle streaming response
-        // TODO: Streaming token tracking - The OpenAI API can return usage in the final chunk
-        // if `stream_options.include_usage=true`. We should parse the final chunk to extract
-        // usage data and call state.usage_tracker.record_usage_data() after stream completes.
-        // For now, streaming requests don't track token usage.
-        handle_streaming_chat(gateway, chat_request, model, start_time).await
+        handle_streaming_chat(state, &headers, chat_request, model, start_time).await
     } else {
         // Handle non-streaming response
-        handle_non_streaming_chat(state, gateway, chat_request, model, start_time, user).await
+        handle_non_streaming_chat(state, &headers, chat_request, model, start_time, user).await
     }
 }
 
 /// Handle non-streaming chat completion
 async fn handle_non_streaming_chat(
     state: Arc<AppState>,
-    gateway: VercelGateway,
+    headers: &HeaderMap,
     request: ChatCompletionRequest,
     model: String,
     start_time: Instant,
     user: AuthenticatedUser,
 ) -> Result<Response, AppError> {
-    let response: ChatCompletionResponse = gateway.chat_completions(&request).await?;
+    // Convert request to Value for the provider
+    let request_value = serde_json::to_value(&request)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {}", e)))?;
+
+    let response_value = state
+        .ai_provider
+        .chat_completions(request_value, headers)
+        .await?;
+
+    // Parse the response
+    let response: ChatCompletionResponse = serde_json::from_value(response_value)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse response: {}", e)))?;
 
     // Record metrics
     let duration = start_time.elapsed().as_secs_f64();
@@ -231,13 +235,21 @@ async fn handle_non_streaming_chat(
 
 /// Handle streaming chat completion
 async fn handle_streaming_chat(
-    gateway: VercelGateway,
+    state: Arc<AppState>,
+    headers: &HeaderMap,
     request: ChatCompletionRequest,
     model: String,
     start_time: Instant,
 ) -> Result<Response, AppError> {
-    // Forward streaming request to gateway
-    let stream = gateway.chat_completions_stream(&request).await?;
+    // Convert request to Value for the provider
+    let request_value = serde_json::to_value(&request)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {}", e)))?;
+
+    // Forward streaming request to provider
+    let stream = state
+        .ai_provider
+        .chat_completions_stream(request_value, headers)
+        .await?;
 
     // Create a channel to pass data
     let model_clone = model.clone();

@@ -8,7 +8,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::{error::AppError, proxy::VercelGateway, AppState};
+use crate::{error::AppError, AppState};
 
 /// Model information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,23 +112,31 @@ fn get_static_models() -> Vec<Model> {
 
 /// List available models
 ///
-/// Attempts to fetch models from Vercel AI Gateway, falls back to static list on error.
+/// Attempts to fetch models from the AI provider, falls back to static list on error.
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
     info!("Fetching available models");
 
-    // Create gateway client
-    let gateway = VercelGateway::new(state.http_client.clone(), &state.config);
-
-    // Try to fetch from gateway, fall back to static list
-    let response = match gateway.list_models::<ModelsResponse>().await {
-        Ok(models) => {
-            info!(count = %models.data.len(), "Fetched models from gateway");
-            models
+    // Try to fetch from provider, fall back to static list
+    let response = match state.ai_provider.list_models().await {
+        Ok(response_value) => {
+            match serde_json::from_value::<ModelsResponse>(response_value) {
+                Ok(models) => {
+                    info!(count = %models.data.len(), "Fetched models from provider");
+                    models
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to parse models response, using static list");
+                    ModelsResponse {
+                        object: "list".to_string(),
+                        data: get_static_models(),
+                    }
+                }
+            }
         }
         Err(e) => {
-            warn!(error = %e, "Failed to fetch models from gateway, using static list");
+            warn!(error = %e, "Failed to fetch models from provider, using static list");
             ModelsResponse {
                 object: "list".to_string(),
                 data: get_static_models(),
@@ -148,20 +156,28 @@ pub async fn get_model(
 ) -> Result<impl IntoResponse, AppError> {
     info!(model_id = %model_id, "Fetching model details");
 
-    // Create gateway client
-    let gateway = VercelGateway::new(state.http_client.clone(), &state.config);
-
-    // Try to fetch all models and find the requested one
-    let models = match gateway.list_models::<ModelsResponse>().await {
-        Ok(response) => response.data,
-        Err(_) => get_static_models(),
+    // Try to fetch model from provider
+    let model = match state.ai_provider.get_model(&model_id).await {
+        Ok(response_value) => {
+            match serde_json::from_value::<Model>(response_value) {
+                Ok(model) => model,
+                Err(_) => {
+                    // Fall back to static list
+                    get_static_models()
+                        .into_iter()
+                        .find(|m| m.id == model_id)
+                        .ok_or_else(|| AppError::NotFound(format!("Model '{}' not found", model_id)))?
+                }
+            }
+        }
+        Err(_) => {
+            // Fall back to static list
+            get_static_models()
+                .into_iter()
+                .find(|m| m.id == model_id)
+                .ok_or_else(|| AppError::NotFound(format!("Model '{}' not found", model_id)))?
+        }
     };
-
-    // Find the model
-    let model = models
-        .into_iter()
-        .find(|m| m.id == model_id)
-        .ok_or_else(|| AppError::NotFound(format!("Model '{}' not found", model_id)))?;
 
     Ok((StatusCode::OK, Json(model)))
 }

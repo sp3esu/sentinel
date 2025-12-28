@@ -8,7 +8,6 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Response};
 use bytes::Bytes;
 use futures::Stream;
-use serde::{de::DeserializeOwned, Serialize};
 use std::pin::Pin;
 
 use crate::error::AppResult;
@@ -21,6 +20,13 @@ pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> +
 /// Implementations of this trait handle communication with specific AI backends
 /// (OpenAI, Anthropic, Azure, etc.) while maintaining a consistent interface
 /// for the rest of the application.
+///
+/// # Design Note
+///
+/// This trait uses `serde_json::Value` instead of generics to be dyn-compatible,
+/// allowing `Arc<dyn AiProvider>` for runtime polymorphism. Callers should
+/// serialize their typed requests to `Value` before calling these methods,
+/// and deserialize the `Value` responses to their typed structs.
 ///
 /// # Security
 ///
@@ -36,62 +42,57 @@ pub trait AiProvider: Send + Sync {
     /// Chat completions (non-streaming)
     ///
     /// Sends a chat completion request and returns the full response.
-    async fn chat_completions<T, R>(&self, request: &T, incoming_headers: &HeaderMap) -> AppResult<R>
-    where
-        T: Serialize + Send + Sync,
-        R: DeserializeOwned;
+    async fn chat_completions(
+        &self,
+        request: serde_json::Value,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<serde_json::Value>;
 
     /// Chat completions (streaming)
     ///
     /// Sends a chat completion request and returns a stream of response chunks.
-    async fn chat_completions_stream<T>(
+    async fn chat_completions_stream(
         &self,
-        request: &T,
+        request: serde_json::Value,
         incoming_headers: &HeaderMap,
-    ) -> AppResult<ByteStream>
-    where
-        T: Serialize + Send + Sync;
+    ) -> AppResult<ByteStream>;
 
     /// Text completions (non-streaming) - legacy endpoint
     ///
     /// Sends a text completion request and returns the full response.
-    async fn completions<T, R>(&self, request: &T, incoming_headers: &HeaderMap) -> AppResult<R>
-    where
-        T: Serialize + Send + Sync,
-        R: DeserializeOwned;
+    async fn completions(
+        &self,
+        request: serde_json::Value,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<serde_json::Value>;
 
     /// Text completions (streaming) - legacy endpoint
     ///
     /// Sends a text completion request and returns a stream of response chunks.
-    async fn completions_stream<T>(
+    async fn completions_stream(
         &self,
-        request: &T,
+        request: serde_json::Value,
         incoming_headers: &HeaderMap,
-    ) -> AppResult<ByteStream>
-    where
-        T: Serialize + Send + Sync;
+    ) -> AppResult<ByteStream>;
 
     /// Embeddings
     ///
     /// Generates embeddings for the given input.
-    async fn embeddings<T, R>(&self, request: &T, incoming_headers: &HeaderMap) -> AppResult<R>
-    where
-        T: Serialize + Send + Sync,
-        R: DeserializeOwned;
+    async fn embeddings(
+        &self,
+        request: serde_json::Value,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<serde_json::Value>;
 
     /// List available models
     ///
     /// Returns a list of models available from this provider.
-    async fn list_models<R>(&self) -> AppResult<R>
-    where
-        R: DeserializeOwned;
+    async fn list_models(&self) -> AppResult<serde_json::Value>;
 
     /// Get a specific model by ID
     ///
     /// Returns details about a specific model.
-    async fn get_model<R>(&self, model_id: &str) -> AppResult<R>
-    where
-        R: DeserializeOwned;
+    async fn get_model(&self, model_id: &str) -> AppResult<serde_json::Value>;
 
     /// Forward a raw request (pass-through)
     ///

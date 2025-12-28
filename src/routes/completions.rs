@@ -19,7 +19,6 @@ use tracing::{info, warn};
 
 use crate::{
     error::AppError,
-    proxy::VercelGateway,
     routes::metrics::{record_request, record_tokens},
     AppState,
 };
@@ -105,7 +104,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
 /// Handle legacy completion requests
 ///
 /// This endpoint is compatible with OpenAI's completions API.
-/// It proxies requests to the Vercel AI Gateway after checking user quotas.
+/// It proxies requests to the AI provider after checking user quotas.
 pub async fn completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -115,9 +114,8 @@ pub async fn completions(
     let model = request.model.clone();
     let is_streaming = request.stream;
 
-    // Extract authorization token (Phase 3 will validate it)
+    // Extract authorization token (kept for potential future use)
     let _token = extract_bearer_token(&headers);
-    // TODO: Phase 3 - Validate JWT and check user quota
 
     info!(
         model = %model,
@@ -125,26 +123,35 @@ pub async fn completions(
         "Processing completion request"
     );
 
-    // Create gateway client
-    let gateway = VercelGateway::new(state.http_client.clone(), &state.config);
-
     if is_streaming {
         // Handle streaming response
-        handle_streaming_completion(gateway, request, model, start_time).await
+        handle_streaming_completion(state, &headers, request, model, start_time).await
     } else {
         // Handle non-streaming response
-        handle_non_streaming_completion(gateway, request, model, start_time).await
+        handle_non_streaming_completion(state, &headers, request, model, start_time).await
     }
 }
 
 /// Handle non-streaming completion
 async fn handle_non_streaming_completion(
-    gateway: VercelGateway,
+    state: Arc<AppState>,
+    headers: &HeaderMap,
     request: CompletionRequest,
     model: String,
     start_time: Instant,
 ) -> Result<Response, AppError> {
-    let response: CompletionResponse = gateway.completions(&request).await?;
+    // Convert request to Value for the provider
+    let request_value = serde_json::to_value(&request)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {}", e)))?;
+
+    let response_value = state
+        .ai_provider
+        .completions(request_value, headers)
+        .await?;
+
+    // Parse the response
+    let response: CompletionResponse = serde_json::from_value(response_value)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse response: {}", e)))?;
 
     // Record metrics
     let duration = start_time.elapsed().as_secs_f64();
@@ -166,13 +173,21 @@ async fn handle_non_streaming_completion(
 
 /// Handle streaming completion
 async fn handle_streaming_completion(
-    gateway: VercelGateway,
+    state: Arc<AppState>,
+    headers: &HeaderMap,
     request: CompletionRequest,
     model: String,
     start_time: Instant,
 ) -> Result<Response, AppError> {
-    // Forward streaming request to gateway
-    let stream = gateway.completions_stream(&request).await?;
+    // Convert request to Value for the provider
+    let request_value = serde_json::to_value(&request)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {}", e)))?;
+
+    // Forward streaming request to provider
+    let stream = state
+        .ai_provider
+        .completions_stream(request_value, headers)
+        .await?;
 
     let model_clone = model.clone();
 

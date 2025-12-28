@@ -8,7 +8,6 @@ use axum::body::Body;
 use axum::http::{HeaderName, Method, Response, StatusCode};
 use http_body_util::BodyExt;
 use reqwest::header::HeaderMap;
-use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, instrument};
 
 use crate::config::Config;
@@ -46,14 +45,23 @@ impl OpenAIProvider {
         }
     }
 
+    /// Check if the provider is configured (always true for OpenAIProvider)
+    ///
+    /// This method exists for backwards compatibility. The provider always
+    /// requires configuration and will panic on creation if not configured.
+    #[deprecated(note = "OpenAI API key is now required, this always returns true")]
+    pub fn is_configured(&self) -> bool {
+        true
+    }
+
     /// Make a POST request (non-streaming)
-    async fn post<T: Serialize, R: DeserializeOwned>(
+    async fn post(
         &self,
         endpoint: &str,
-        body: &T,
+        body: &serde_json::Value,
         incoming_headers: &HeaderMap,
         ctx: &RequestContext,
-    ) -> AppResult<R> {
+    ) -> AppResult<serde_json::Value> {
         let url = format!("{}{}", self.base_url, endpoint);
 
         let headers = build_proxy_headers(incoming_headers, &self.api_key);
@@ -92,7 +100,7 @@ impl OpenAIProvider {
             "Response body received"
         );
 
-        let result: R = serde_json::from_str(&body_text).map_err(|e| {
+        let result: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
             ctx.log_error(&format!("Failed to parse response: {}", e));
             AppError::UpstreamError(format!("Failed to parse response: {}", e))
         })?;
@@ -102,10 +110,10 @@ impl OpenAIProvider {
     }
 
     /// Make a POST request with streaming response
-    async fn post_stream<T: Serialize>(
+    async fn post_stream(
         &self,
         endpoint: &str,
-        body: &T,
+        body: &serde_json::Value,
         incoming_headers: &HeaderMap,
         ctx: &RequestContext,
     ) -> AppResult<ByteStream> {
@@ -144,7 +152,7 @@ impl OpenAIProvider {
     }
 
     /// Make a GET request
-    async fn get<R: DeserializeOwned>(&self, endpoint: &str, ctx: &RequestContext) -> AppResult<R> {
+    async fn get(&self, endpoint: &str, ctx: &RequestContext) -> AppResult<serde_json::Value> {
         let url = format!("{}{}", self.base_url, endpoint);
 
         let headers = build_default_headers(&self.api_key);
@@ -176,7 +184,7 @@ impl OpenAIProvider {
         }
 
         let body_text = response.text().await?;
-        let result: R = serde_json::from_str(&body_text).map_err(|e| {
+        let result: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
             ctx.log_error(&format!("Failed to parse response: {}", e));
             AppError::UpstreamError(format!("Failed to parse response: {}", e))
         })?;
@@ -219,90 +227,74 @@ impl AiProvider for OpenAIProvider {
     }
 
     #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "chat/completions"))]
-    async fn chat_completions<T, R>(
+    async fn chat_completions(
         &self,
-        request: &T,
+        request: serde_json::Value,
         incoming_headers: &HeaderMap,
-    ) -> AppResult<R>
-    where
-        T: Serialize + Send + Sync,
-        R: DeserializeOwned,
-    {
+    ) -> AppResult<serde_json::Value> {
         let ctx = RequestContext::new(self.name(), "/v1/chat/completions");
         ctx.log_request_start();
-        self.post("/chat/completions", request, incoming_headers, &ctx)
+        self.post("/chat/completions", &request, incoming_headers, &ctx)
             .await
     }
 
     #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "chat/completions", streaming = true))]
-    async fn chat_completions_stream<T>(
+    async fn chat_completions_stream(
         &self,
-        request: &T,
+        request: serde_json::Value,
         incoming_headers: &HeaderMap,
-    ) -> AppResult<ByteStream>
-    where
-        T: Serialize + Send + Sync,
-    {
+    ) -> AppResult<ByteStream> {
         let ctx = RequestContext::new(self.name(), "/v1/chat/completions").with_streaming(true);
         ctx.log_request_start();
-        self.post_stream("/chat/completions", request, incoming_headers, &ctx)
+        self.post_stream("/chat/completions", &request, incoming_headers, &ctx)
             .await
     }
 
     #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "completions"))]
-    async fn completions<T, R>(&self, request: &T, incoming_headers: &HeaderMap) -> AppResult<R>
-    where
-        T: Serialize + Send + Sync,
-        R: DeserializeOwned,
-    {
+    async fn completions(
+        &self,
+        request: serde_json::Value,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<serde_json::Value> {
         let ctx = RequestContext::new(self.name(), "/v1/completions");
         ctx.log_request_start();
-        self.post("/completions", request, incoming_headers, &ctx)
+        self.post("/completions", &request, incoming_headers, &ctx)
             .await
     }
 
     #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "completions", streaming = true))]
-    async fn completions_stream<T>(
+    async fn completions_stream(
         &self,
-        request: &T,
+        request: serde_json::Value,
         incoming_headers: &HeaderMap,
-    ) -> AppResult<ByteStream>
-    where
-        T: Serialize + Send + Sync,
-    {
+    ) -> AppResult<ByteStream> {
         let ctx = RequestContext::new(self.name(), "/v1/completions").with_streaming(true);
         ctx.log_request_start();
-        self.post_stream("/completions", request, incoming_headers, &ctx)
+        self.post_stream("/completions", &request, incoming_headers, &ctx)
             .await
     }
 
     #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "embeddings"))]
-    async fn embeddings<T, R>(&self, request: &T, incoming_headers: &HeaderMap) -> AppResult<R>
-    where
-        T: Serialize + Send + Sync,
-        R: DeserializeOwned,
-    {
+    async fn embeddings(
+        &self,
+        request: serde_json::Value,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<serde_json::Value> {
         let ctx = RequestContext::new(self.name(), "/v1/embeddings");
         ctx.log_request_start();
-        self.post("/embeddings", request, incoming_headers, &ctx)
+        self.post("/embeddings", &request, incoming_headers, &ctx)
             .await
     }
 
     #[instrument(skip(self), fields(provider = "openai", endpoint = "models"))]
-    async fn list_models<R>(&self) -> AppResult<R>
-    where
-        R: DeserializeOwned,
-    {
+    async fn list_models(&self) -> AppResult<serde_json::Value> {
         let ctx = RequestContext::new(self.name(), "/v1/models");
         ctx.log_request_start();
         self.get("/models", &ctx).await
     }
 
     #[instrument(skip(self), fields(provider = "openai", endpoint = "models"))]
-    async fn get_model<R>(&self, model_id: &str) -> AppResult<R>
-    where
-        R: DeserializeOwned,
-    {
+    async fn get_model(&self, model_id: &str) -> AppResult<serde_json::Value> {
         let ctx = RequestContext::new(self.name(), &format!("/v1/models/{}", model_id));
         ctx.log_request_start();
         self.get(&format!("/models/{}", model_id), &ctx).await

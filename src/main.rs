@@ -22,6 +22,7 @@ mod zion;
 
 use crate::cache::{RedisCache, SubscriptionCache};
 use crate::config::Config;
+use crate::proxy::{AiProvider, OpenAIProvider};
 use crate::usage::{BatchingUsageTracker, UsageTracker};
 use crate::zion::ZionClient;
 
@@ -37,6 +38,8 @@ pub struct AppState {
     pub usage_tracker: Arc<UsageTracker>,
     /// Batching usage tracker for fire-and-forget tracking (protects Zion from floods)
     pub batching_tracker: Arc<BatchingUsageTracker>,
+    /// AI provider for forwarding requests to LLM backends
+    pub ai_provider: Arc<dyn AiProvider>,
 }
 
 impl AppState {
@@ -75,6 +78,14 @@ impl AppState {
             redis.clone(),
         ));
 
+        // Initialize AI provider (OpenAI by default)
+        // Note: Will panic if OPENAI_API_KEY is not set - this is intentional
+        // as the proxy cannot function without an AI provider
+        let ai_provider: Arc<dyn AiProvider> = Arc::new(OpenAIProvider::new(
+            http_client.clone(),
+            &config,
+        ));
+
         Ok(Self {
             config,
             redis,
@@ -84,6 +95,7 @@ impl AppState {
             subscription_cache,
             usage_tracker,
             batching_tracker,
+            ai_provider,
         })
     }
 }

@@ -1,7 +1,7 @@
 //! OpenAI Responses API handler
 //!
-//! Routes /v1/responses directly to OpenAI since Vercel AI Gateway
-//! doesn't support the Responses API endpoint.
+//! Routes /v1/responses directly to OpenAI since this endpoint
+//! is specific to OpenAI and not available through all providers.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,15 +17,13 @@ use tracing::info;
 use crate::{
     error::AppError,
     middleware::auth::AuthenticatedUser,
-    proxy::OpenAIClient,
     routes::metrics::record_request,
     AppState,
 };
 
 /// Handler for POST /v1/responses
 ///
-/// This endpoint routes directly to OpenAI API since Vercel AI Gateway
-/// doesn't support the Responses API.
+/// This endpoint routes directly to OpenAI API.
 pub async fn responses_handler(
     State(state): State<Arc<AppState>>,
     method: Method,
@@ -43,21 +41,12 @@ pub async fn responses_handler(
         "Processing OpenAI Responses API request"
     );
 
-    // Create OpenAI client
-    let openai = OpenAIClient::new(state.http_client.clone(), &state.config);
-
-    // Check if OpenAI is configured
-    if !openai.is_configured() {
-        return Err(AppError::ServiceUnavailable(
-            "OpenAI API key not configured. Set OPENAI_API_KEY to use the Responses API.".to_string()
-        ));
-    }
-
     // Extract body from request
     let body = request.into_body();
 
-    // Forward the request directly to OpenAI
-    let response = openai
+    // Forward the request using the AI provider
+    let response = state
+        .ai_provider
         .forward_raw(method.clone(), path, headers, body)
         .await?;
 

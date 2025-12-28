@@ -21,14 +21,9 @@ pub struct Config {
     /// Zion API key for external service authentication
     pub zion_api_key: String,
 
-    /// Vercel AI Gateway URL
-    pub vercel_gateway_url: String,
-    /// Vercel AI Gateway API key
-    pub vercel_gateway_api_key: String,
-
-    /// OpenAI API URL (for endpoints not supported by Vercel AI Gateway)
+    /// OpenAI API URL
     pub openai_api_url: String,
-    /// OpenAI API key (optional - if not set, unsupported endpoints will fail)
+    /// OpenAI API key (required for AI provider)
     pub openai_api_key: Option<String>,
 
     /// Cache TTL for user limits (in seconds)
@@ -55,11 +50,6 @@ impl Config {
             zion_api_key: env::var("ZION_API_KEY")
                 .context("ZION_API_KEY must be set")?,
 
-            vercel_gateway_url: env::var("VERCEL_AI_GATEWAY_URL")
-                .unwrap_or_else(|_| "https://api.vercel.ai/v1".to_string()),
-            vercel_gateway_api_key: env::var("VERCEL_AI_GATEWAY_API_KEY")
-                .context("VERCEL_AI_GATEWAY_API_KEY must be set")?,
-
             openai_api_url: env::var("OPENAI_API_URL")
                 .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
             openai_api_key: env::var("OPENAI_API_KEY").ok(),
@@ -85,18 +75,17 @@ mod tests {
         // Set required env vars
         env::set_var("ZION_API_URL", "http://localhost:3000");
         env::set_var("ZION_API_KEY", "test-key");
-        env::set_var("VERCEL_AI_GATEWAY_API_KEY", "test-vercel-key");
 
         let config = Config::from_env().unwrap();
 
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 8080);
         assert_eq!(config.redis_url, "redis://localhost:6379");
+        assert_eq!(config.openai_api_url, "https://api.openai.com/v1");
         assert_eq!(config.cache_ttl_seconds, 300);
 
         // Clean up
         env::remove_var("ZION_API_URL");
         env::remove_var("ZION_API_KEY");
-        env::remove_var("VERCEL_AI_GATEWAY_API_KEY");
     }
 }
