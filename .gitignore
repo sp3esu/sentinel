@@ -15,6 +15,9 @@ Cargo.lock
 
 # Environment files
 .env
+.env.docker
+.env.local
+.env.*.local
 !.env.example
 
 # OS files

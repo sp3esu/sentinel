@@ -7,7 +7,7 @@ This document provides context for Claude Code when working with the Sentinel co
 Sentinel is a high-performance AI proxy written in Rust that:
 - Provides OpenAI-compatible API endpoints for chat applications
 - Implements traffic limiting based on user subscriptions from Zion governance system
-- Routes requests through Vercel AI Gateway to LLM providers
+- Routes requests directly to OpenAI API (with a generic provider abstraction for future extensibility)
 - Caches user limits in Redis with TTL-based invalidation
 - Counts tokens using tiktoken-rs for accurate usage tracking
 
@@ -26,7 +26,7 @@ Client (with Zion JWT)
 │  ├─────────────┤  │
 │  │Token Counter│  │
 │  ├─────────────┤  │
-│  │   Proxy     │──┼──▶ Vercel AI Gateway (OpenAI)
+│  │ AI Provider │──┼──▶ OpenAI API (via generic AiProvider trait)
 │  └─────────────┘  │
 │         │         │
 │         ▼         │
@@ -57,7 +57,12 @@ Zion API (usage increment, /api/v1/usage/external/increment)
 ### External Integrations
 - `src/zion/client.rs` - Zion API client for limits and usage
 - `src/zion/models.rs` - Zion data types (UserLimit, UserProfile, etc.)
-- `src/proxy/vercel_gateway.rs` - Vercel AI Gateway client with streaming
+
+### AI Provider Layer (`src/proxy/`)
+- `provider.rs` - `AiProvider` trait defining the generic AI provider interface
+- `openai.rs` - `OpenAIProvider` implementation (primary provider)
+- `headers.rs` - Secure header filtering utilities (whitelist-based, never forwards JWT)
+- `logging.rs` - `RequestContext` for request correlation and debugging
 
 ### Caching (`src/cache/`)
 - `redis.rs` - Generic Redis cache with TTL
@@ -107,13 +112,13 @@ docker build -t sentinel .
 Required:
 - `ZION_API_URL` - Zion governance API base URL
 - `ZION_API_KEY` - API key for Zion external endpoints
-- `VERCEL_AI_GATEWAY_API_KEY` - Vercel AI Gateway authentication
+- `OPENAI_API_KEY` - OpenAI API key (used for all AI requests)
 
 Optional (with defaults):
 - `SENTINEL_HOST` (default: `0.0.0.0`)
 - `SENTINEL_PORT` (default: `8080`)
 - `REDIS_URL` (default: `redis://localhost:6379`)
-- `VERCEL_AI_GATEWAY_URL` (default: `https://api.vercel.ai/v1`)
+- `OPENAI_API_URL` (default: `https://api.openai.com/v1`)
 - `CACHE_TTL_SECONDS` (default: `300`)
 - `JWT_CACHE_TTL_SECONDS` (default: `300`)
 - `RUST_LOG` (default: `sentinel=info,tower_http=info`)
@@ -218,7 +223,7 @@ Located in `tests/integration/`:
 ### Mocks
 Located in `tests/mocks/`:
 - `zion.rs` - Mock Zion API server (wiremock)
-- `vercel_gateway.rs` - Mock AI Gateway
+- `openai.rs` - Mock OpenAI API server (wiremock)
 - `redis.rs` - Redis test helpers
 
 ## Performance Notes

@@ -5,5 +5,5 @@
 
 mod mocks;
 
-// The tests are defined within each mock module (zion.rs, vercel_gateway.rs, redis.rs)
+// The tests are defined within each mock module (zion.rs, openai.rs, redis.rs)
 // and are automatically run when this test file is compiled.

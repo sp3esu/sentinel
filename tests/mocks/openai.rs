@@ -1,6 +1,6 @@
-//! Mock Vercel AI Gateway for testing
+//! Mock OpenAI API for testing
 //!
-//! Provides wiremock-based mocks for Vercel AI Gateway endpoints:
+//! Provides wiremock-based mocks for OpenAI API endpoints:
 //! - POST /v1/chat/completions - Chat completions (streaming and non-streaming)
 //! - POST /v1/completions - Text completions
 //! - GET /v1/models - List available models
@@ -8,16 +8,16 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use crate::mocks::vercel_gateway::{MockVercelGateway, VercelTestData};
+//! use crate::mocks::openai::{MockOpenAI, OpenAITestData};
 //!
 //! #[tokio::test]
-//! async fn test_with_vercel_mock() {
-//!     let mock_gateway = MockVercelGateway::start().await;
+//! async fn test_with_openai_mock() {
+//!     let mock_api = MockOpenAI::start().await;
 //!
 //!     // Set up successful chat completion response
-//!     mock_gateway.mock_chat_completion_success(VercelTestData::simple_response()).await;
+//!     mock_api.mock_chat_completion_success(OpenAITestData::simple_response()).await;
 //!
-//!     // Use mock_gateway.uri() as the Vercel Gateway URL
+//!     // Use mock_api.uri() as the OpenAI API URL
 //!     // ...
 //! }
 //! ```
@@ -51,13 +51,13 @@ fn current_timestamp() -> i64 {
         .as_secs() as i64
 }
 
-/// Mock Vercel AI Gateway server wrapper
-pub struct MockVercelGateway {
+/// Mock OpenAI API server wrapper
+pub struct MockOpenAI {
     server: MockServer,
 }
 
-impl MockVercelGateway {
-    /// Start a new mock Vercel Gateway server
+impl MockOpenAI {
+    /// Start a new mock OpenAI API server
     pub async fn start() -> Self {
         let server = MockServer::start().await;
         Self { server }
@@ -505,9 +505,9 @@ pub struct OpenAIErrorResponseMock {
 // =============================================================================
 
 /// Factory for creating test data
-pub struct VercelTestData;
+pub struct OpenAITestData;
 
-impl VercelTestData {
+impl OpenAITestData {
     /// Create a simple chat completion response
     pub fn simple_chat_response(content: &str) -> ChatCompletionResponseMock {
         ChatCompletionResponseMock {
@@ -699,14 +699,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_server_starts() {
-        let mock = MockVercelGateway::start().await;
+        let mock = MockOpenAI::start().await;
         assert!(!mock.uri().is_empty());
     }
 
     #[tokio::test]
     async fn test_mock_chat_completion_success() {
-        let mock = MockVercelGateway::start().await;
-        let response = VercelTestData::simple_chat_response("Hello, world!");
+        let mock = MockOpenAI::start().await;
+        let response = OpenAITestData::simple_chat_response("Hello, world!");
         mock.mock_chat_completion_success(response).await;
 
         let client = reqwest::Client::new();
@@ -729,8 +729,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_streaming_response() {
-        let mock = MockVercelGateway::start().await;
-        let chunks = VercelTestData::streaming_chunks("Hello world test");
+        let mock = MockOpenAI::start().await;
+        let chunks = OpenAITestData::streaming_chunks("Hello world test");
         mock.mock_chat_completion_stream(chunks).await;
 
         let client = reqwest::Client::new();
@@ -754,8 +754,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_list_models() {
-        let mock = MockVercelGateway::start().await;
-        mock.mock_list_models_success(VercelTestData::default_models()).await;
+        let mock = MockOpenAI::start().await;
+        mock.mock_list_models_success(OpenAITestData::default_models()).await;
 
         let client = reqwest::Client::new();
         let response = client
@@ -773,14 +773,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_test_data_factories() {
-        let chat_response = VercelTestData::simple_chat_response("Test");
+        let chat_response = OpenAITestData::simple_chat_response("Test");
         assert_eq!(chat_response.choices.len(), 1);
         assert!(chat_response.usage.is_some());
 
-        let chunks = VercelTestData::streaming_chunks("Hello world");
+        let chunks = OpenAITestData::streaming_chunks("Hello world");
         assert!(chunks.len() >= 3); // At least: role, content, finish
 
-        let models = VercelTestData::default_models();
+        let models = OpenAITestData::default_models();
         assert!(!models.is_empty());
     }
 }

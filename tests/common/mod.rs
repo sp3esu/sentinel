@@ -12,8 +12,8 @@ use wiremock::matchers::{method, path, path_regex, header};
 pub mod constants {
     /// Default test API key for Zion
     pub const TEST_ZION_API_KEY: &str = "test-zion-api-key";
-    /// Default test API key for Vercel Gateway
-    pub const TEST_VERCEL_API_KEY: &str = "test-vercel-api-key";
+    /// Default test API key for OpenAI
+    pub const TEST_OPENAI_API_KEY: &str = "test-openai-api-key";
     /// Default test JWT token
     pub const TEST_JWT_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzEyMyIsImVtYWlsIjoidGVzdEB0ZXN0LmNvbSJ9.test";
     /// Test user ID
@@ -32,23 +32,23 @@ pub struct TestConfig {
     pub redis_url: String,
     pub zion_api_url: String,
     pub zion_api_key: String,
-    pub vercel_gateway_url: String,
-    pub vercel_gateway_api_key: String,
+    pub openai_api_url: String,
+    pub openai_api_key: String,
     pub cache_ttl_seconds: u64,
     pub jwt_cache_ttl_seconds: u64,
 }
 
 impl TestConfig {
     /// Create a test config with mock server URLs
-    pub fn new(zion_url: &str, vercel_url: &str) -> Self {
+    pub fn new(zion_url: &str, openai_url: &str) -> Self {
         Self {
             host: "127.0.0.1".to_string(),
             port: 0, // Let OS assign port
             redis_url: "redis://localhost:6379".to_string(),
             zion_api_url: zion_url.to_string(),
             zion_api_key: constants::TEST_ZION_API_KEY.to_string(),
-            vercel_gateway_url: vercel_url.to_string(),
-            vercel_gateway_api_key: constants::TEST_VERCEL_API_KEY.to_string(),
+            openai_api_url: openai_url.to_string(),
+            openai_api_key: constants::TEST_OPENAI_API_KEY.to_string(),
             cache_ttl_seconds: 300,
             jwt_cache_ttl_seconds: 300,
         }
@@ -137,8 +137,8 @@ pub mod zion_mocks {
     }
 }
 
-/// Mock Vercel Gateway responses
-pub mod vercel_mocks {
+/// Mock OpenAI API responses
+pub mod openai_mocks {
     use super::*;
     use serde_json::json;
 
