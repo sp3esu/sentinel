@@ -59,11 +59,11 @@ pub struct ExternalLimitsData {
 }
 
 /// Request to increment usage (unified format with all 3 metrics)
+/// Note: limit_name is not sent - it's auto-detected from user's subscription plan
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncrementUsageRequest {
     pub email: String,
-    pub limit_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_input_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,20 +72,31 @@ pub struct IncrementUsageRequest {
     pub ai_requests: Option<i64>,
 }
 
+/// Response data from single increment endpoint
+/// Note: Different from UserLimit - includes canUse, excludes name/displayName/resetPeriod
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncrementUsageData {
+    pub can_use: bool,
+    pub ai_input_tokens: LimitMetric,
+    pub ai_output_tokens: LimitMetric,
+    pub ai_requests: LimitMetric,
+}
+
 /// Response from increment usage endpoint
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncrementUsageResponse {
     pub success: bool,
-    pub data: UserLimit,
+    pub data: IncrementUsageData,
 }
 
 /// Single item in a batch increment request
+/// Note: limit_name is not sent - it's auto-detected from user's subscription plan
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchIncrementItem {
     pub email: String,
-    pub limit_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_input_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -418,7 +429,6 @@ mod tests {
     fn test_serialize_increment_request() {
         let request = IncrementUsageRequest {
             email: "user123@example.com".to_string(),
-            limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(100),
             ai_output_tokens: Some(50),
             ai_requests: Some(1),
@@ -426,7 +436,8 @@ mod tests {
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"email\":\"user123@example.com\""));
-        assert!(json.contains("\"limitName\":\"ai_usage\""));
+        // limitName is no longer sent - auto-detected by API
+        assert!(!json.contains("limitName"));
         assert!(json.contains("\"aiInputTokens\":100"));
         assert!(json.contains("\"aiOutputTokens\":50"));
         assert!(json.contains("\"aiRequests\":1"));
@@ -436,7 +447,6 @@ mod tests {
     fn test_serialize_increment_request_partial() {
         let request = IncrementUsageRequest {
             email: "user123@example.com".to_string(),
-            limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(100),
             ai_output_tokens: None,
             ai_requests: None,
@@ -452,7 +462,6 @@ mod tests {
     fn test_deserialize_increment_request() {
         let json = r#"{
             "email": "user@example.com",
-            "limitName": "ai_usage",
             "aiInputTokens": 1000,
             "aiOutputTokens": 500,
             "aiRequests": 1
@@ -460,7 +469,6 @@ mod tests {
 
         let request: IncrementUsageRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.email, "user@example.com");
-        assert_eq!(request.limit_name, "ai_usage");
         assert_eq!(request.ai_input_tokens, Some(1000));
         assert_eq!(request.ai_output_tokens, Some(500));
         assert_eq!(request.ai_requests, Some(1));
@@ -470,7 +478,6 @@ mod tests {
     fn test_increment_request_clone() {
         let request = IncrementUsageRequest {
             email: "user123@example.com".to_string(),
-            limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(100),
             ai_output_tokens: Some(50),
             ai_requests: Some(1),
@@ -489,7 +496,6 @@ mod tests {
     fn test_batch_increment_item_serialize() {
         let item = BatchIncrementItem {
             email: "user123@example.com".to_string(),
-            limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(1000),
             ai_output_tokens: Some(500),
             ai_requests: Some(1),
@@ -497,7 +503,8 @@ mod tests {
 
         let json = serde_json::to_string(&item).unwrap();
         assert!(json.contains("\"email\":\"user123@example.com\""));
-        assert!(json.contains("\"limitName\":\"ai_usage\""));
+        // limitName is no longer sent - auto-detected by API
+        assert!(!json.contains("limitName"));
         assert!(json.contains("\"aiInputTokens\":1000"));
     }
 
@@ -507,14 +514,12 @@ mod tests {
             increments: vec![
                 BatchIncrementItem {
                     email: "user1@example.com".to_string(),
-                    limit_name: "ai_usage".to_string(),
                     ai_input_tokens: Some(1000),
                     ai_output_tokens: Some(500),
                     ai_requests: Some(1),
                 },
                 BatchIncrementItem {
                     email: "user2@example.com".to_string(),
-                    limit_name: "ai_usage".to_string(),
                     ai_input_tokens: Some(2000),
                     ai_output_tokens: None,
                     ai_requests: Some(1),
@@ -526,6 +531,8 @@ mod tests {
         assert!(json.contains("\"increments\""));
         assert!(json.contains("\"user1@example.com\""));
         assert!(json.contains("\"user2@example.com\""));
+        // limitName is no longer sent
+        assert!(!json.contains("limitName"));
     }
 
     #[test]
@@ -648,33 +655,47 @@ mod tests {
     }
 
     // ===========================================
-    // IncrementUsageResponse Tests (Unified Structure)
+    // IncrementUsageResponse Tests (IncrementUsageData)
     // ===========================================
 
     #[test]
     fn test_deserialize_increment_usage_response() {
+        // Actual response format from Zion API
         let json = r#"{
             "success": true,
             "data": {
-                "name": "ai_usage",
-                "displayName": "AI Usage",
-                "unit": "tokens",
+                "canUse": true,
                 "aiInputTokens": {"limit": 100000, "used": 1100, "remaining": 98900},
                 "aiOutputTokens": {"limit": 50000, "used": 550, "remaining": 49450},
-                "aiRequests": {"limit": 1000, "used": 11, "remaining": 989},
-                "resetPeriod": "MONTHLY",
-                "periodStart": null,
-                "periodEnd": null
+                "aiRequests": {"limit": 1000, "used": 11, "remaining": 989}
             }
         }"#;
 
         let response: IncrementUsageResponse = serde_json::from_str(json).unwrap();
         assert!(response.success);
-        assert_eq!(response.data.name, "ai_usage");
+        assert!(response.data.can_use);
         assert_eq!(response.data.ai_input_tokens.used, 1100);
         assert_eq!(response.data.ai_input_tokens.remaining, 98900);
         assert_eq!(response.data.ai_output_tokens.used, 550);
         assert_eq!(response.data.ai_requests.used, 11);
+    }
+
+    #[test]
+    fn test_deserialize_increment_usage_response_limit_exceeded() {
+        let json = r#"{
+            "success": true,
+            "data": {
+                "canUse": false,
+                "aiInputTokens": {"limit": 1000, "used": 1000, "remaining": 0},
+                "aiOutputTokens": {"limit": 500, "used": 500, "remaining": 0},
+                "aiRequests": {"limit": 10, "used": 10, "remaining": 0}
+            }
+        }"#;
+
+        let response: IncrementUsageResponse = serde_json::from_str(json).unwrap();
+        assert!(response.success);
+        assert!(!response.data.can_use);
+        assert_eq!(response.data.ai_input_tokens.remaining, 0);
     }
 
     // ===========================================
@@ -872,7 +893,6 @@ mod tests {
     fn test_increment_request_roundtrip() {
         let original = IncrementUsageRequest {
             email: "user@example.com".to_string(),
-            limit_name: "ai_usage".to_string(),
             ai_input_tokens: Some(1000),
             ai_output_tokens: Some(500),
             ai_requests: Some(1),
@@ -882,7 +902,6 @@ mod tests {
         let deserialized: IncrementUsageRequest = serde_json::from_str(&json).unwrap();
 
         assert_eq!(original.email, deserialized.email);
-        assert_eq!(original.limit_name, deserialized.limit_name);
         assert_eq!(original.ai_input_tokens, deserialized.ai_input_tokens);
         assert_eq!(original.ai_output_tokens, deserialized.ai_output_tokens);
         assert_eq!(original.ai_requests, deserialized.ai_requests);

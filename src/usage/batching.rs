@@ -380,11 +380,11 @@ impl BatchingUsageTracker {
         rate_limiter.until_ready().await;
 
         // Convert to batch increment items
+        // Note: limit_name is not sent - auto-detected from user's subscription plan
         let batch_items: Vec<BatchIncrementItem> = increments
             .iter()
             .map(|(email, usage)| BatchIncrementItem {
                 email: email.clone(),
-                limit_name: "ai_usage".to_string(),
                 ai_input_tokens: if usage.input_tokens > 0 {
                     Some(usage.input_tokens)
                 } else {

@@ -9,7 +9,7 @@ use tracing::{debug, instrument};
 use crate::{
     cache::redis::{keys, RedisCache},
     error::AppResult,
-    zion::{UserLimit, UserProfile, ZionClient},
+    zion::{IncrementUsageData, UserLimit, UserProfile, ZionClient},
 };
 
 /// Subscription cache service
@@ -170,7 +170,7 @@ impl SubscriptionCache {
         input_tokens: i64,
         output_tokens: i64,
         requests: i64,
-    ) -> AppResult<UserLimit> {
+    ) -> AppResult<IncrementUsageData> {
         // Increment via Zion API
         let updated_limit = self
             .zion_client
