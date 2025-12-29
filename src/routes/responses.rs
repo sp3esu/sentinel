@@ -24,22 +24,13 @@ use crate::{
     AppState,
 };
 
-/// Input message in responses API (same format as chat messages)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InputMessage {
-    pub role: String,
-    #[serde(default)]
-    pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
 /// Responses API request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponsesRequest {
     pub model: String,
+    /// Input items - can be message items (with role) or function call outputs (with call_id)
     #[serde(default)]
-    pub input: Vec<InputMessage>,
+    pub input: Vec<serde_json::Value>,
     #[serde(default)]
     pub stream: bool,
     // Pass through all other fields
@@ -71,16 +62,26 @@ pub struct ResponsesResponse {
     pub extra: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-/// Convert input messages to tuples for token counting
-fn input_to_tuples(input: &[InputMessage]) -> Vec<(String, String, Option<String>)> {
+/// Convert input items to tuples for token counting.
+/// Only extracts items that have a "role" field (message items).
+/// Function call output items and other non-message items are skipped.
+fn input_to_tuples(input: &[serde_json::Value]) -> Vec<(String, String, Option<String>)> {
     input
         .iter()
-        .map(|msg| {
-            (
-                msg.role.clone(),
-                msg.content.clone().unwrap_or_default(),
-                msg.name.clone(),
-            )
+        .filter_map(|item| {
+            // Only process items with "role" field (message items)
+            let role = item.get("role")?.as_str()?;
+            let content = item
+                .get("content")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+            let name = item
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
+
+            Some((role.to_string(), content, name))
         })
         .collect()
 }
@@ -393,4 +394,100 @@ async fn handle_streaming_responses(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to build response: {}", e)))?;
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_input_to_tuples_message_items() {
+        let input = vec![
+            json!({"role": "user", "content": "Hello"}),
+            json!({"role": "assistant", "content": "Hi there!"}),
+        ];
+
+        let tuples = input_to_tuples(&input);
+        assert_eq!(tuples.len(), 2);
+        assert_eq!(tuples[0], ("user".to_string(), "Hello".to_string(), None));
+        assert_eq!(
+            tuples[1],
+            ("assistant".to_string(), "Hi there!".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn test_input_to_tuples_skips_function_call_output() {
+        let input = vec![
+            json!({"role": "user", "content": "What's the weather?"}),
+            json!({"type": "function_call_output", "call_id": "call_123", "output": "{\"temp\": 72}"}),
+            json!({"role": "assistant", "content": "The weather is 72 degrees."}),
+        ];
+
+        let tuples = input_to_tuples(&input);
+        assert_eq!(tuples.len(), 2);
+        assert_eq!(tuples[0].0, "user");
+        assert_eq!(tuples[1].0, "assistant");
+    }
+
+    #[test]
+    fn test_input_to_tuples_skips_function_call() {
+        let input = vec![
+            json!({"role": "user", "content": "Get weather"}),
+            json!({"type": "function_call", "call_id": "call_123", "name": "get_weather", "arguments": "{}"}),
+        ];
+
+        let tuples = input_to_tuples(&input);
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(tuples[0].0, "user");
+    }
+
+    #[test]
+    fn test_input_to_tuples_with_name() {
+        let input = vec![json!({"role": "user", "content": "Hello", "name": "Alice"})];
+
+        let tuples = input_to_tuples(&input);
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(
+            tuples[0],
+            (
+                "user".to_string(),
+                "Hello".to_string(),
+                Some("Alice".to_string())
+            )
+        );
+    }
+
+    #[test]
+    fn test_input_to_tuples_empty_content() {
+        let input = vec![
+            json!({"role": "user"}), // No content field
+        ];
+
+        let tuples = input_to_tuples(&input);
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(tuples[0].1, ""); // Empty string for missing content
+    }
+
+    #[test]
+    fn test_input_to_tuples_mixed_items() {
+        // Real-world scenario: conversation with function calling
+        let input = vec![
+            json!({"role": "user", "content": "What's the weather in Paris?"}),
+            json!({"role": "assistant", "content": null}),
+            json!({"type": "function_call", "call_id": "fc_1", "name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}),
+            json!({"type": "function_call_output", "call_id": "fc_1", "output": "{\"temp\":\"18C\",\"condition\":\"cloudy\"}"}),
+            json!({"role": "assistant", "content": "The weather in Paris is 18C and cloudy."}),
+        ];
+
+        let tuples = input_to_tuples(&input);
+        // Should only get 3 items: user, assistant (empty), assistant (with content)
+        assert_eq!(tuples.len(), 3);
+        assert_eq!(tuples[0].0, "user");
+        assert_eq!(tuples[1].0, "assistant");
+        assert_eq!(tuples[1].1, ""); // null content becomes empty string
+        assert_eq!(tuples[2].0, "assistant");
+        assert!(tuples[2].1.contains("Paris"));
+    }
 }
