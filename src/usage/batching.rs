@@ -619,6 +619,8 @@ impl BatchingUsageTracker {
                     increment.input_tokens,
                     increment.output_tokens,
                     increment.requests,
+                    increment.model.as_deref(),
+                    Some(&increment.timestamp),
                 )
                 .await
             {

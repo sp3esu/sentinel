@@ -95,7 +95,7 @@ impl UsageTracker {
         let requests = if usage.count_request { 1 } else { 0 };
 
         self.zion_client
-            .increment_usage(external_id, input_tokens, output_tokens, requests)
+            .increment_usage(external_id, input_tokens, output_tokens, requests, None, None)
             .await?;
 
         tracing::info!(

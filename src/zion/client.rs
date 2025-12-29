@@ -98,6 +98,8 @@ impl ZionClient {
         input_tokens: i64,
         output_tokens: i64,
         requests: i64,
+        model: Option<&str>,
+        timestamp: Option<&str>,
     ) -> AppResult<IncrementUsageData> {
         let url = format!("{}/api/v1/usage/external/increment", self.base_url);
 
@@ -106,6 +108,8 @@ impl ZionClient {
             ai_input_tokens: if input_tokens > 0 { Some(input_tokens) } else { None },
             ai_output_tokens: if output_tokens > 0 { Some(output_tokens) } else { None },
             ai_requests: if requests > 0 { Some(requests) } else { None },
+            model: model.map(|s| s.to_string()),
+            timestamp: timestamp.map(|s| s.to_string()),
         };
 
         debug!(url = %url, "Incrementing usage via Zion");

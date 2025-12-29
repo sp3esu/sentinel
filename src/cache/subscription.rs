@@ -233,11 +233,13 @@ impl SubscriptionCache {
         input_tokens: i64,
         output_tokens: i64,
         requests: i64,
+        model: Option<&str>,
+        timestamp: Option<&str>,
     ) -> AppResult<IncrementUsageData> {
         // Increment via Zion API
         let updated_limit = self
             .zion_client
-            .increment_usage(external_id, input_tokens, output_tokens, requests)
+            .increment_usage(external_id, input_tokens, output_tokens, requests, model, timestamp)
             .await?;
 
         // Invalidate cached limits
