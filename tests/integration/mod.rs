@@ -8,3 +8,4 @@ pub mod chat_completions;
 pub mod health;
 pub mod models;
 pub mod rate_limiting;
+pub mod token_tracking;

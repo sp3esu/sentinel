@@ -5,8 +5,14 @@
 
 #![allow(dead_code)]
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::Router;
+use axum_test::TestServer;
 use wiremock::{MockServer, Mock, ResponseTemplate};
 use wiremock::matchers::{method, path, path_regex, header};
+
 
 /// Test configuration constants
 pub mod constants {
@@ -274,5 +280,159 @@ pub mod test_data {
                 }
             ]
         })
+    }
+}
+
+// =============================================================================
+// Token Tracking Test Harness
+// =============================================================================
+
+use sentinel::{
+    AppState, Config, ZionClient, OpenAIProvider, BatchingUsageTracker,
+    proxy::AiProvider, routes,
+};
+use crate::mocks::{openai::MockOpenAI, zion::MockZionServer};
+use tokio::time::Instant;
+
+/// Test harness for blackbox token tracking tests
+///
+/// This harness creates a complete test environment with:
+/// - Mock OpenAI server (wiremock)
+/// - Mock Zion server (wiremock) with request capture
+/// - Real Redis connection for caching
+/// - Real app router with all middleware
+///
+/// # Example
+///
+/// ```ignore
+/// let harness = TokenTrackingTestHarness::new().await;
+///
+/// // Set up mocks
+/// harness.openai.mock_chat_completion_with_usage("Hello!", 10, 5).await;
+/// harness.zion.mock_get_user_profile_success(profile).await;
+/// harness.zion.mock_batch_increment_success(1, 0).await;
+///
+/// // Make request
+/// let response = harness.server
+///     .post("/v1/chat/completions")
+///     .add_header("Authorization", format!("Bearer {}", token))
+///     .json(&request)
+///     .await;
+///
+/// // Wait for and verify Zion batch-increment was called
+/// let requests = harness.wait_for_batch_requests(1, Duration::from_secs(2)).await;
+/// assert!(!requests.is_empty());
+/// ```
+pub struct TokenTrackingTestHarness {
+    pub server: TestServer,
+    pub openai: MockOpenAI,
+    pub zion: MockZionServer,
+}
+
+impl TokenTrackingTestHarness {
+    /// Create a new test harness
+    ///
+    /// Requires Redis to be running locally on the default port.
+    pub async fn new() -> Self {
+        // Start mock servers
+        let openai = MockOpenAI::start().await;
+        let zion = MockZionServer::start().await;
+
+        // Create config pointing to mocks
+        let config = Config {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            redis_url: "redis://localhost:6379".to_string(),
+            zion_api_url: zion.uri(),
+            zion_api_key: constants::TEST_ZION_API_KEY.to_string(),
+            openai_api_url: openai.uri(),
+            openai_api_key: Some(constants::TEST_OPENAI_API_KEY.to_string()),
+            cache_ttl_seconds: 60,
+            jwt_cache_ttl_seconds: 60,
+        };
+
+        // Connect to Redis
+        let redis_client = redis::Client::open(config.redis_url.as_str())
+            .expect("Failed to create Redis client");
+        let redis = redis::aio::ConnectionManager::new(redis_client)
+            .await
+            .expect("Failed to connect to Redis - ensure Redis is running");
+
+        // Create HTTP client
+        let http_client = reqwest::Client::new();
+
+        // Create Zion client pointing to mock
+        let zion_client = Arc::new(ZionClient::new(http_client.clone(), &config));
+
+        // Create batching tracker (test version without Redis retry)
+        let batching_tracker = Arc::new(BatchingUsageTracker::new_for_testing(zion_client.clone()));
+
+        // Create AI provider pointing to mock
+        let ai_provider: Arc<dyn AiProvider> = Arc::new(
+            OpenAIProvider::new(http_client, &config)
+        );
+
+        // Create app state
+        let state = Arc::new(
+            AppState::new_for_testing(
+                config,
+                redis,
+                zion_client,
+                ai_provider,
+                batching_tracker,
+            ).await
+        );
+
+        // Create router
+        let app = routes::create_router(state);
+
+        // Create test server
+        let server = TestServer::new(app).expect("Failed to create test server");
+
+        Self { server, openai, zion }
+    }
+
+    /// Wait for batch-increment requests to arrive at the mock Zion server
+    ///
+    /// Polls the mock server until the expected number of requests arrive
+    /// or the timeout is reached.
+    pub async fn wait_for_batch_requests(
+        &self,
+        min_count: usize,
+        timeout: Duration,
+    ) -> Vec<wiremock::Request> {
+        let start = Instant::now();
+        loop {
+            let requests = self.zion.batch_increment_requests().await;
+            if requests.len() >= min_count {
+                return requests;
+            }
+            if start.elapsed() > timeout {
+                return requests; // Return what we have
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Parse batch increment payload from a request
+    ///
+    /// Extracts the increments array from the request body.
+    pub fn parse_batch_payload(request: &wiremock::Request) -> Vec<serde_json::Value> {
+        let body: serde_json::Value = serde_json::from_slice(&request.body)
+            .expect("Failed to parse batch increment request body");
+        body["increments"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Extract token counts from a batch increment item
+    ///
+    /// Returns (input_tokens, output_tokens, requests)
+    pub fn extract_token_counts(item: &serde_json::Value) -> (i64, i64, i64) {
+        let input = item["aiInputTokens"].as_i64().unwrap_or(0);
+        let output = item["aiOutputTokens"].as_i64().unwrap_or(0);
+        let requests = item["aiRequests"].as_i64().unwrap_or(0);
+        (input, output, requests)
     }
 }

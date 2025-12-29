@@ -7,6 +7,10 @@ authors = ["Sentinel Team"]
 license = "MIT"
 repository = "https://github.com/your-org/sentinel"
 
+[features]
+default = []
+test-utils = []  # Enables test-only constructors for integration testing
+
 [dependencies]
 # Web framework
 axum = { version = "0.7", features = ["macros"] }

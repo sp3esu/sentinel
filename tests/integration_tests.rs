@@ -5,8 +5,10 @@
 
 mod common;
 mod integration;
+mod mocks;
 
 // Tests are defined within the integration module:
 // - integration/health.rs - Health endpoint tests
 // - integration/models.rs - Models endpoint tests
 // - integration/chat_completions.rs - Chat completions endpoint tests
+// - integration/token_tracking.rs - Token tracking blackbox tests
