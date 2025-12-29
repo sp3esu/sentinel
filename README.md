@@ -200,12 +200,25 @@ X-RateLimit-Reset: 1705312800
 
 ## Token Counting
 
-Tokens are counted accurately using `tiktoken-rs`:
+Tokens are counted accurately using `tiktoken-rs` and reported to Zion for quota tracking:
 
-- **Pre-request**: Estimates prompt tokens before forwarding
-- **Post-response**: Uses OpenAI's `usage` field when available
-- **Streaming**: Uses `stream_options.include_usage=true`
-- **Fallback**: Counts completion tokens locally
+### Strategy
+1. **Pre-request**: Always estimates input tokens before forwarding to OpenAI
+2. **Post-response**: Uses OpenAI's `usage` field when available
+3. **Streaming**: Accumulates content from stream chunks, counts tokens at completion
+4. **Fallback**: If OpenAI doesn't return usage, falls back to tiktoken-rs estimation
+
+### How It Works
+- `SharedTokenCounter` provides thread-safe token counting in `AppState`
+- For chat requests: Converts messages to tuples, counts with `count_chat_messages()`
+- For completions: Extracts prompt text, counts with `count_tokens()`
+- Streaming requests parse SSE chunks for content accumulation and usage data
+
+### Usage Reporting
+All requests report token usage to Zion via batch increments:
+```json
+{"email": "user@example.com", "aiInputTokens": 123, "aiOutputTokens": 456, "aiRequests": 1}
+```
 
 ## Zion Integration
 

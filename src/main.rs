@@ -23,6 +23,7 @@ mod zion;
 use crate::cache::{RedisCache, SubscriptionCache};
 use crate::config::Config;
 use crate::proxy::{AiProvider, OpenAIProvider};
+use crate::tokens::SharedTokenCounter;
 use crate::usage::{BatchingUsageTracker, UsageTracker};
 use crate::zion::ZionClient;
 
@@ -40,6 +41,8 @@ pub struct AppState {
     pub batching_tracker: Arc<BatchingUsageTracker>,
     /// AI provider for forwarding requests to LLM backends
     pub ai_provider: Arc<dyn AiProvider>,
+    /// Token counter for estimating token usage with tiktoken-rs
+    pub token_counter: SharedTokenCounter,
 }
 
 impl AppState {
@@ -86,6 +89,9 @@ impl AppState {
             &config,
         ));
 
+        // Initialize token counter for tiktoken-based token estimation
+        let token_counter = SharedTokenCounter::new();
+
         Ok(Self {
             config,
             redis,
@@ -96,6 +102,7 @@ impl AppState {
             usage_tracker,
             batching_tracker,
             ai_provider,
+            token_counter,
         })
     }
 }

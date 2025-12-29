@@ -15,7 +15,7 @@ use axum::{
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::{
     error::AppError,
@@ -23,6 +23,20 @@ use crate::{
     routes::metrics::{record_request, record_tokens},
     AppState,
 };
+
+/// Extract prompt text for token counting
+/// Handles both string and array-of-strings formats
+fn extract_prompt_text(prompt: &serde_json::Value) -> String {
+    match prompt {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
 
 /// Completion request
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +176,13 @@ async fn handle_non_streaming_completion(
     start_time: Instant,
     user: AuthenticatedUser,
 ) -> Result<Response, AppError> {
+    // Pre-count input tokens using tiktoken (for fallback if OpenAI doesn't return usage)
+    let prompt_text = extract_prompt_text(&request.prompt);
+    let estimated_input_tokens = state
+        .token_counter
+        .count_tokens(&model, &prompt_text)
+        .unwrap_or(0);
+
     // Convert request to Value for the provider
     let request_value = serde_json::to_value(&request)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {}", e)))?;
@@ -172,28 +193,46 @@ async fn handle_non_streaming_completion(
         .await?;
 
     // Parse the response
-    let response: CompletionResponse = serde_json::from_value(response_value)
+    let response: CompletionResponse = serde_json::from_value(response_value.clone())
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse response: {}", e)))?;
 
     // Record metrics
     let duration = start_time.elapsed().as_secs_f64();
     record_request("success", &model, duration);
 
-    if let Some(ref usage) = response.usage {
-        record_tokens("prompt", usage.prompt_tokens as u64, &model);
-        record_tokens("completion", usage.completion_tokens as u64, &model);
-
-        // Track usage in Zion (fire-and-forget, never blocks)
-        state.batching_tracker.track(
-            user.email.clone(),
-            usage.prompt_tokens as u64,
-            usage.completion_tokens as u64,
+    // Get token counts: prefer OpenAI usage, fallback to estimation
+    let (input_tokens, output_tokens) = if let Some(ref usage) = response.usage {
+        (usage.prompt_tokens as u64, usage.completion_tokens as u64)
+    } else {
+        // Fallback: use estimated input tokens, estimate output from response text
+        let output_text = response
+            .choices
+            .first()
+            .map(|c| c.text.as_str())
+            .unwrap_or("");
+        let estimated_output = state
+            .token_counter
+            .count_tokens(&model, output_text)
+            .unwrap_or(0) as u64;
+        debug!(
+            estimated_input = estimated_input_tokens,
+            estimated_output = estimated_output,
+            "Using estimated token counts (OpenAI didn't return usage)"
         );
-    }
+        (estimated_input_tokens as u64, estimated_output)
+    };
+
+    record_tokens("prompt", input_tokens, &model);
+    record_tokens("completion", output_tokens, &model);
+
+    // Track usage in Zion (fire-and-forget, never blocks)
+    state.batching_tracker.track(user.email.clone(), input_tokens, output_tokens);
 
     info!(
         model = %model,
         duration_ms = %format!("{:.2}", duration * 1000.0),
+        input_tokens = input_tokens,
+        output_tokens = output_tokens,
         external_id = %user.external_id,
         "Completion request completed"
     );
@@ -201,11 +240,20 @@ async fn handle_non_streaming_completion(
     Ok((StatusCode::OK, Json(response)).into_response())
 }
 
-/// Streaming chunk for parsing usage
+/// Streaming chunk for parsing content and usage
 #[derive(Debug, Clone, Deserialize)]
 struct StreamChunk {
     #[serde(default)]
+    choices: Vec<StreamChoice>,
+    #[serde(default)]
     usage: Option<Usage>,
+}
+
+/// Streaming choice with text (for completions endpoint)
+#[derive(Debug, Clone, Deserialize, Default)]
+struct StreamChoice {
+    #[serde(default)]
+    text: Option<String>,
 }
 
 /// Handle streaming completion
@@ -217,6 +265,13 @@ async fn handle_streaming_completion(
     start_time: Instant,
     user: AuthenticatedUser,
 ) -> Result<Response, AppError> {
+    // Pre-count input tokens using tiktoken
+    let prompt_text = extract_prompt_text(&request.prompt);
+    let estimated_input_tokens = state
+        .token_counter
+        .count_tokens(&model, &prompt_text)
+        .unwrap_or(0) as u64;
+
     // Convert request to Value for the provider
     let request_value = serde_json::to_value(&request)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {}", e)))?;
@@ -231,26 +286,43 @@ async fn handle_streaming_completion(
     let model_clone = model.clone();
     let tracker = state.batching_tracker.clone();
     let user_email = user.email.clone();
+    let token_counter = state.token_counter.clone();
 
-    // Track accumulated usage from stream
+    // Track accumulated usage from stream (if OpenAI provides it)
     let usage_accumulator = std::sync::Arc::new(std::sync::Mutex::new(Usage::default()));
     let usage_for_stream = usage_accumulator.clone();
 
-    // Wrap the stream to extract usage from chunks
+    // Track accumulated content for token counting fallback
+    let content_accumulator = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let content_for_stream = content_accumulator.clone();
+
+    // Wrap the stream to extract content and usage from chunks
     let tracked_stream = stream.map(move |chunk| {
         match chunk {
             Ok(bytes) => {
-                // Try to parse usage from SSE chunks
+                // Try to parse content and usage from SSE chunks
                 if let Ok(text) = std::str::from_utf8(&bytes) {
                     for line in text.lines() {
                         if let Some(json_str) = line.strip_prefix("data: ") {
                             if json_str != "[DONE]" {
-                                if let Ok(chunk) = serde_json::from_str::<StreamChunk>(json_str) {
-                                    if let Some(usage) = chunk.usage {
-                                        let mut acc = usage_for_stream.lock().unwrap();
-                                        acc.prompt_tokens = usage.prompt_tokens;
-                                        acc.completion_tokens = usage.completion_tokens;
-                                        acc.total_tokens = usage.total_tokens;
+                                match serde_json::from_str::<StreamChunk>(json_str) {
+                                    Ok(chunk) => {
+                                        // Accumulate text from choices
+                                        if let Some(choice) = chunk.choices.first() {
+                                            if let Some(ref text) = choice.text {
+                                                content_for_stream.lock().unwrap().push_str(text);
+                                            }
+                                        }
+                                        // Capture usage if provided
+                                        if let Some(usage) = chunk.usage {
+                                            let mut acc = usage_for_stream.lock().unwrap();
+                                            acc.prompt_tokens = usage.prompt_tokens;
+                                            acc.completion_tokens = usage.completion_tokens;
+                                            acc.total_tokens = usage.total_tokens;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        debug!(error = %e, chunk = %json_str, "Failed to parse SSE chunk");
                                     }
                                 }
                             }
@@ -269,7 +341,9 @@ async fn handle_streaming_completion(
     // Create a stream that tracks usage after completion
     let user_email_final = user_email.clone();
     let model_for_metrics = model.clone();
+    let model_for_counting = model.clone();
     let usage_final = usage_accumulator.clone();
+    let content_final = content_accumulator.clone();
     let tracker_final = tracker.clone();
 
     let final_stream = async_stream::stream! {
@@ -278,27 +352,41 @@ async fn handle_streaming_completion(
             yield item;
         }
 
-        // Stream completed - record metrics and track usage
-        let usage = usage_final.lock().unwrap().clone();
-        if usage.prompt_tokens > 0 || usage.completion_tokens > 0 {
-            record_tokens("prompt", usage.prompt_tokens as u64, &model_for_metrics);
-            record_tokens("completion", usage.completion_tokens as u64, &model_for_metrics);
+        // Stream completed - determine token counts
+        let openai_usage = usage_final.lock().unwrap().clone();
+        let accumulated_content = content_final.lock().unwrap().clone();
 
-            // Track usage in Zion (fire-and-forget)
-            tracker_final.track(
-                user_email_final.clone(),
-                usage.prompt_tokens as u64,
-                usage.completion_tokens as u64,
+        // Prefer OpenAI usage if available, otherwise estimate
+        let (input_tokens, output_tokens) = if openai_usage.prompt_tokens > 0 || openai_usage.completion_tokens > 0 {
+            (openai_usage.prompt_tokens as u64, openai_usage.completion_tokens as u64)
+        } else {
+            // Fallback to estimation
+            let estimated_output = token_counter
+                .count_tokens(&model_for_counting, &accumulated_content)
+                .unwrap_or(0) as u64;
+            debug!(
+                estimated_input = estimated_input_tokens,
+                estimated_output = estimated_output,
+                content_len = accumulated_content.len(),
+                "Using estimated token counts for streaming (OpenAI didn't return usage)"
             );
+            (estimated_input_tokens, estimated_output)
+        };
 
-            info!(
-                model = %model_for_metrics,
-                prompt_tokens = usage.prompt_tokens,
-                completion_tokens = usage.completion_tokens,
-                email = %user_email_final,
-                "Streaming completion usage tracked"
-            );
-        }
+        // Record metrics
+        record_tokens("prompt", input_tokens, &model_for_metrics);
+        record_tokens("completion", output_tokens, &model_for_metrics);
+
+        // ALWAYS track usage in Zion (fire-and-forget)
+        tracker_final.track(user_email_final.clone(), input_tokens, output_tokens);
+
+        info!(
+            model = %model_for_metrics,
+            input_tokens = input_tokens,
+            output_tokens = output_tokens,
+            email = %user_email_final,
+            "Streaming completion usage tracked"
+        );
     };
 
     // Record that we started streaming

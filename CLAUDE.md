@@ -154,10 +154,27 @@ Uses sliding window algorithm in Redis:
 
 ## Token Counting
 
-- Pre-request: Estimates prompt tokens before forwarding
-- Post-response: Uses OpenAI `usage` field when available
-- Streaming: Uses `stream_options.include_usage=true`
-- Fallback: Counts locally with tiktoken-rs
+Sentinel counts tokens using tiktoken-rs and reports usage to Zion for quota tracking.
+
+### Strategy
+1. **Pre-request**: Always estimate input tokens before sending to OpenAI
+2. **Post-response**: Prefer OpenAI's `usage` field when available
+3. **Streaming**: Accumulate content from stream, count tokens at completion
+4. **Fallback**: If OpenAI doesn't return usage, use tiktoken-rs estimation
+
+### Implementation
+- `SharedTokenCounter` in `AppState` provides thread-safe token counting
+- For chat: Converts messages to tuples and counts with `count_chat_messages()`
+- For completions: Extracts prompt text and counts with `count_tokens()`
+- Streaming parses SSE chunks for both content (for counting) and usage (if OpenAI provides it)
+
+### Usage Reporting to Zion
+All requests (streaming and non-streaming) report to Zion:
+```json
+{"email": "user@example.com", "aiInputTokens": 123, "aiOutputTokens": 456, "aiRequests": 1}
+```
+
+The `BatchingUsageTracker` batches increments and sends them periodically to protect Zion from request floods.
 
 ## Zion Integration
 
