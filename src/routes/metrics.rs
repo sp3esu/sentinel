@@ -53,6 +53,14 @@ fn register_metrics() {
         "sentinel_token_estimation_diff_pct",
         "Percentage difference between estimated and actual input tokens"
     );
+    metrics::describe_counter!(
+        "sentinel_sse_parse_errors_total",
+        "Total SSE JSON parse errors encountered during streaming"
+    );
+    metrics::describe_counter!(
+        "sentinel_token_estimation_fallback_total",
+        "Times token counting fell back to estimation (OpenAI didn't return usage)"
+    );
 }
 
 /// Prometheus metrics endpoint handler
@@ -118,6 +126,31 @@ pub fn record_token_estimation_diff(model: &str, estimated: u64, actual: u64) {
         "model" => model.to_string()
     )
     .record(diff_pct);
+}
+
+/// Record SSE parse error during streaming
+///
+/// Called when a complete SSE line fails to parse as valid JSON.
+/// This helps identify issues with malformed responses from upstream providers.
+pub fn record_sse_parse_error(endpoint: &str, model: &str) {
+    metrics::counter!(
+        "sentinel_sse_parse_errors_total",
+        "endpoint" => endpoint.to_string(),
+        "model" => model.to_string()
+    )
+    .increment(1);
+}
+
+/// Record when token counting falls back to estimation
+///
+/// Called when OpenAI doesn't return usage data in streaming response,
+/// requiring Sentinel to use tiktoken-based estimation instead.
+pub fn record_fallback_estimation(model: &str) {
+    metrics::counter!(
+        "sentinel_token_estimation_fallback_total",
+        "model" => model.to_string()
+    )
+    .increment(1);
 }
 
 #[cfg(test)]
