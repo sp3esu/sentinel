@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 use crate::{
     error::AppError,
     middleware::auth::AuthenticatedUser,
-    routes::metrics::{record_request, record_tokens},
+    routes::metrics::{record_request, record_token_estimation_diff, record_tokens},
     AppState,
 };
 
@@ -202,6 +202,24 @@ async fn handle_non_streaming_completion(
 
     // Get token counts: prefer OpenAI usage, fallback to estimation
     let (input_tokens, output_tokens) = if let Some(ref usage) = response.usage {
+        // Log comparison between estimated and actual
+        let input_diff = (usage.prompt_tokens as i64) - (estimated_input_tokens as i64);
+        let input_diff_pct = if estimated_input_tokens > 0 {
+            input_diff as f64 / estimated_input_tokens as f64 * 100.0
+        } else { 0.0 };
+
+        debug!(
+            estimated_input = estimated_input_tokens,
+            actual_input = usage.prompt_tokens,
+            input_diff = input_diff,
+            input_diff_pct = %format!("{:.1}%", input_diff_pct),
+            actual_output = usage.completion_tokens,
+            model = %model,
+            "Token estimation comparison"
+        );
+
+        record_token_estimation_diff(&model, estimated_input_tokens as u64, usage.prompt_tokens as u64);
+
         (usage.prompt_tokens as u64, usage.completion_tokens as u64)
     } else {
         // Fallback: use estimated input tokens, estimate output from response text
@@ -358,6 +376,24 @@ async fn handle_streaming_completion(
 
         // Prefer OpenAI usage if available, otherwise estimate
         let (input_tokens, output_tokens) = if openai_usage.prompt_tokens > 0 || openai_usage.completion_tokens > 0 {
+            // Log comparison between estimated and actual
+            let input_diff = (openai_usage.prompt_tokens as i64) - (estimated_input_tokens as i64);
+            let input_diff_pct = if estimated_input_tokens > 0 {
+                input_diff as f64 / estimated_input_tokens as f64 * 100.0
+            } else { 0.0 };
+
+            debug!(
+                estimated_input = estimated_input_tokens,
+                actual_input = openai_usage.prompt_tokens,
+                input_diff = input_diff,
+                input_diff_pct = %format!("{:.1}%", input_diff_pct),
+                actual_output = openai_usage.completion_tokens,
+                model = %model_for_counting,
+                "Token estimation comparison (streaming)"
+            );
+
+            record_token_estimation_diff(&model_for_counting, estimated_input_tokens, openai_usage.prompt_tokens as u64);
+
             (openai_usage.prompt_tokens as u64, openai_usage.completion_tokens as u64)
         } else {
             // Fallback to estimation
