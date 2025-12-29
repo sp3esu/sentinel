@@ -608,4 +608,166 @@ mod tests {
         let count = counter.count_tokens("gpt-4", text);
         assert!(count > 10, "Mixed content should have many tokens");
     }
+
+    // ===========================================
+    // Known Value Token Counting Tests
+    // ===========================================
+    //
+    // These tests verify exact token counts against known values from
+    // OpenAI's tokenizer to ensure accuracy of our token counting.
+
+    #[test]
+    fn test_known_openai_token_counts() {
+        let mut counter = TokenCounter::new();
+
+        // Test case 1: "Hello, world!" - verified to be 4 tokens for GPT-4
+        // Tokens: ["Hello", ",", " world", "!"]
+        let count = counter.count_tokens("gpt-4", "Hello, world!");
+        assert_eq!(count, 4, "\"Hello, world!\" should be exactly 4 tokens");
+
+        // Test case 2: "The quick brown fox" - verified to be 4 tokens for GPT-4
+        // Tokens: ["The", " quick", " brown", " fox"]
+        let count = counter.count_tokens("gpt-4", "The quick brown fox");
+        assert_eq!(count, 4, "\"The quick brown fox\" should be exactly 4 tokens");
+
+        // Test case 3: Simple sentence for accuracy verification
+        // "Testing tokenization accuracy." - verified to be 5 tokens
+        // Tokens: ["Test", "ing", " token", "ization", " accuracy."]
+        let count = counter.count_tokens("gpt-4", "Testing tokenization accuracy.");
+        assert_eq!(count, 5, "\"Testing tokenization accuracy.\" should be exactly 5 tokens");
+
+        // Test case 4: Common phrase
+        // "I love programming" - verified to be 3 tokens
+        // Tokens: ["I", " love", " programming"]
+        let count = counter.count_tokens("gpt-4", "I love programming");
+        assert_eq!(count, 3, "\"I love programming\" should be exactly 3 tokens");
+
+        // Test case 5: Number and text
+        // "42" - should be 1 token
+        let count = counter.count_tokens("gpt-4", "42");
+        assert_eq!(count, 1, "\"42\" should be exactly 1 token");
+
+        // Test case 6: Whitespace handling
+        // Single space should be 1 token
+        let count = counter.count_tokens("gpt-4", " ");
+        assert_eq!(count, 1, "Single space should be exactly 1 token");
+    }
+
+    #[test]
+    fn test_chat_message_overhead_accuracy() {
+        let mut counter = TokenCounter::new();
+
+        // Test case 1: Empty content message with "user" role
+        // The message overhead is 3 tokens for the message wrapper
+        // plus the role tokens (each role is 1 token: "user", "assistant", "system")
+        let empty_count = counter.count_message_tokens("gpt-4", "user", "", None);
+        // Expected: 3 (message overhead) + 1 (role "user") + 0 (empty content)
+        assert_eq!(empty_count, 4,
+            "Empty user message should have exactly 4 tokens (3 overhead + 1 for 'user')");
+
+        // Test case 2: Message with simple content
+        // "Hi" is 1 token, plus overhead
+        let content_count = counter.count_message_tokens("gpt-4", "user", "Hi", None);
+        let content_tokens = counter.count_tokens("gpt-4", "Hi");
+        assert_eq!(content_count, content_tokens + 4,
+            "Message with content should be content tokens ({}) + 4 overhead, got {}",
+            content_tokens, content_count);
+
+        // Test case 3: Message with name adds 1 additional token overhead
+        let without_name = counter.count_message_tokens("gpt-4", "user", "Hi", None);
+        let with_name = counter.count_message_tokens("gpt-4", "user", "Hi", Some("Alice"));
+        let name_tokens = counter.count_tokens("gpt-4", "Alice");
+        // Name adds: tokens for the name + 1 for name overhead
+        assert_eq!(with_name, without_name + name_tokens + 1,
+            "Message with name should add name tokens ({}) + 1 overhead token", name_tokens);
+
+        // Test case 4: Verify assistant role
+        // All roles ("user", "assistant", "system") are 1 token each
+        let assistant_count = counter.count_message_tokens("gpt-4", "assistant", "", None);
+        assert_eq!(assistant_count, 4,
+            "Empty assistant message should have exactly 4 tokens (3 overhead + 1 for 'assistant')");
+
+        // Test case 5: Verify system role
+        let system_count = counter.count_message_tokens("gpt-4", "system", "", None);
+        assert_eq!(system_count, 4,
+            "Empty system message should have exactly 4 tokens (3 overhead + 1 for 'system')");
+
+        // Test case 6: All roles should have the same overhead for empty content
+        assert_eq!(empty_count, assistant_count,
+            "All roles should have same token count for empty content");
+        assert_eq!(empty_count, system_count,
+            "All roles should have same token count for empty content");
+    }
+
+    #[test]
+    fn test_chat_request_reply_priming() {
+        let mut counter = TokenCounter::new();
+
+        // Test case 1: Empty messages array should result in exactly 3 tokens (reply priming)
+        // The reply priming is: <|start|>assistant<|message|> = 3 tokens
+        let empty_messages: Vec<(&str, &str, Option<&str>)> = vec![];
+        let count = counter.count_chat_request_tokens("gpt-4", &empty_messages);
+        assert_eq!(count, 3,
+            "Empty messages should have exactly 3 tokens for reply priming");
+
+        // Test case 2: Single message should be message tokens + 3 reply priming
+        let single_message = vec![("user", "Hello", None)];
+        let message_tokens = counter.count_message_tokens("gpt-4", "user", "Hello", None);
+        let total_count = counter.count_chat_request_tokens("gpt-4", &single_message);
+        assert_eq!(total_count, message_tokens + 3,
+            "Chat request should be message tokens ({}) + 3 reply priming, got {}",
+            message_tokens, total_count);
+
+        // Test case 3: Multiple messages should sum message tokens + 3 reply priming
+        let messages = vec![
+            ("system", "You are helpful.", None),
+            ("user", "Hi", None),
+        ];
+        let msg1_tokens = counter.count_message_tokens("gpt-4", "system", "You are helpful.", None);
+        let msg2_tokens = counter.count_message_tokens("gpt-4", "user", "Hi", None);
+        let total = counter.count_chat_request_tokens("gpt-4", &messages);
+        assert_eq!(total, msg1_tokens + msg2_tokens + 3,
+            "Total should be sum of message tokens ({} + {}) + 3 reply priming, got {}",
+            msg1_tokens, msg2_tokens, total);
+    }
+
+    #[test]
+    fn test_known_token_count_consistency_across_models() {
+        let mut counter = TokenCounter::new();
+        let text = "Hello, world!";
+
+        // GPT-4 and GPT-3.5-turbo use the same tokenizer (cl100k_base)
+        let gpt4_count = counter.count_tokens("gpt-4", text);
+        let gpt35_count = counter.count_tokens("gpt-3.5-turbo", text);
+        let gpt4_turbo_count = counter.count_tokens("gpt-4-turbo", text);
+
+        assert_eq!(gpt4_count, 4, "GPT-4 should tokenize 'Hello, world!' as 4 tokens");
+        assert_eq!(gpt35_count, gpt4_count,
+            "GPT-3.5-turbo should use same tokenizer as GPT-4");
+        assert_eq!(gpt4_turbo_count, gpt4_count,
+            "GPT-4-turbo should use same tokenizer as GPT-4");
+    }
+
+    #[test]
+    fn test_known_token_boundaries() {
+        let mut counter = TokenCounter::new();
+
+        // Test punctuation attachment
+        // "hello." vs "hello ." - both are 2 tokens with cl100k_base
+        // Verified: "hello." = ["hello", "."] and "hello ." = ["hello", " ."]
+        let attached = counter.count_tokens("gpt-4", "hello.");
+        let separated = counter.count_tokens("gpt-4", "hello .");
+        assert_eq!(attached, 2, "\"hello.\" should be 2 tokens");
+        assert_eq!(separated, 2, "\"hello .\" should be 2 tokens");
+
+        // Test word boundaries with common contractions
+        let dont = counter.count_tokens("gpt-4", "don't");
+        assert_eq!(dont, 2, "\"don't\" should be 2 tokens");
+
+        // Test capitalization - doesn't typically change token count for simple words
+        let lower = counter.count_tokens("gpt-4", "hello");
+        let upper = counter.count_tokens("gpt-4", "Hello");
+        assert_eq!(lower, 1, "\"hello\" should be 1 token");
+        assert_eq!(upper, 1, "\"Hello\" should be 1 token");
+    }
 }
