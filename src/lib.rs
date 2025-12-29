@@ -10,6 +10,7 @@ pub mod error;
 pub mod middleware;
 pub mod proxy;
 pub mod routes;
+pub mod streaming;
 pub mod tokens;
 pub mod usage;
 pub mod zion;
