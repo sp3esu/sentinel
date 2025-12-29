@@ -20,8 +20,11 @@ use tracing::{debug, info, warn};
 use crate::{
     error::AppError,
     middleware::auth::AuthenticatedUser,
-    proxy::AiProvider,
-    routes::metrics::{record_request, record_token_estimation_diff, record_tokens},
+    routes::metrics::{
+        record_fallback_estimation, record_request, record_sse_parse_error,
+        record_token_estimation_diff, record_tokens,
+    },
+    streaming::SseLineBuffer,
     AppState,
 };
 
@@ -366,35 +369,44 @@ async fn handle_streaming_chat(
     let content_accumulator = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let content_for_stream = content_accumulator.clone();
 
+    // Buffer for accumulating incomplete SSE lines across chunk boundaries
+    let line_buffer = std::sync::Arc::new(std::sync::Mutex::new(SseLineBuffer::new()));
+    let line_buffer_for_stream = line_buffer.clone();
+
+    // Clone model for metrics in stream closure
+    let model_for_parse_error = model.clone();
+
     // Wrap the stream to extract content and usage from chunks
     let tracked_stream = stream.map(move |chunk| {
         match chunk {
             Ok(bytes) => {
-                // Try to parse content and usage from SSE chunks
-                // Format: "data: {...}\n\n" or "data: [DONE]\n\n"
-                if let Ok(text) = std::str::from_utf8(&bytes) {
-                    for line in text.lines() {
-                        if let Some(json_str) = line.strip_prefix("data: ") {
-                            if json_str != "[DONE]" {
-                                match serde_json::from_str::<StreamChunk>(json_str) {
-                                    Ok(chunk) => {
-                                        // Accumulate content from delta
-                                        if let Some(choice) = chunk.choices.first() {
-                                            if let Some(ref content) = choice.delta.content {
-                                                content_for_stream.lock().unwrap().push_str(content);
-                                            }
-                                        }
-                                        // Capture usage if provided (usually in final chunk)
-                                        if let Some(usage) = chunk.usage {
-                                            let mut acc = usage_for_stream.lock().unwrap();
-                                            acc.prompt_tokens = usage.prompt_tokens;
-                                            acc.completion_tokens = usage.completion_tokens;
-                                            acc.total_tokens = usage.total_tokens;
+                // Use line buffer to handle chunks split across network boundaries
+                let complete_lines = line_buffer_for_stream.lock().unwrap().feed(&bytes);
+
+                for line in complete_lines {
+                    if let Some(json_str) = line.strip_prefix("data: ") {
+                        let json_str = json_str.trim();
+                        if json_str != "[DONE]" {
+                            match serde_json::from_str::<StreamChunk>(json_str) {
+                                Ok(chunk) => {
+                                    // Accumulate content from delta
+                                    if let Some(choice) = chunk.choices.first() {
+                                        if let Some(ref content) = choice.delta.content {
+                                            content_for_stream.lock().unwrap().push_str(content);
                                         }
                                     }
-                                    Err(e) => {
-                                        debug!(error = %e, chunk = %json_str, "Failed to parse SSE chunk");
+                                    // Capture usage if provided (usually in final chunk)
+                                    if let Some(usage) = chunk.usage {
+                                        let mut acc = usage_for_stream.lock().unwrap();
+                                        acc.prompt_tokens = usage.prompt_tokens;
+                                        acc.completion_tokens = usage.completion_tokens;
+                                        acc.total_tokens = usage.total_tokens;
                                     }
+                                }
+                                Err(e) => {
+                                    // Log and record metric for parse failures on complete lines
+                                    warn!(error = %e, "Failed to parse complete SSE line");
+                                    record_sse_parse_error("chat", &model_for_parse_error);
                                 }
                             }
                         }
@@ -451,16 +463,18 @@ async fn handle_streaming_chat(
 
             (openai_usage.prompt_tokens as u64, openai_usage.completion_tokens as u64)
         } else {
-            // Fallback to estimation
+            // Fallback to estimation - OpenAI didn't return usage field
             let estimated_output = token_counter
                 .count_tokens(&model_for_counting, &accumulated_content)
                 .unwrap_or(0) as u64;
-            debug!(
+            warn!(
+                model = %model_for_counting,
                 estimated_input = estimated_input_tokens,
                 estimated_output = estimated_output,
                 content_len = accumulated_content.len(),
-                "Using estimated token counts for streaming (OpenAI didn't return usage)"
+                "Using estimated token counts - OpenAI didn't return usage field"
             );
+            record_fallback_estimation(&model_for_counting);
             (estimated_input_tokens, estimated_output)
         };
 
