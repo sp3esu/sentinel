@@ -268,6 +268,94 @@ async fn test_token_counts_never_zero_for_valid_requests() {
 }
 
 // =============================================================================
+// Asymmetric Token Test (Black-Box Verification)
+// =============================================================================
+
+/// Test that proves tokens are NOT swapped by using extreme asymmetry
+/// and printing the actual JSON payload sent to Zion.
+///
+/// This test:
+/// 1. Sends a short prompt (10 input tokens)
+/// 2. Gets a long response (1000 output tokens)
+/// 3. Captures the exact JSON sent to Zion
+/// 4. Verifies aiInputTokens < aiOutputTokens
+#[tokio::test]
+async fn test_token_ordering_asymmetric_blackbox() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up mocks with EXTREME asymmetry: 10 input, 1000 output
+    // If tokens are swapped, this would be obviously wrong
+    let small_input = 10i64;
+    let large_output = 1000i64;
+
+    harness.zion.mock_get_user_profile_success(test_profile()).await;
+    harness.zion.mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits()).await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness.openai.mock_chat_completion_with_usage(
+        "This is a very long response with many tokens to simulate AI giving a detailed answer.",
+        small_input,
+        large_output,
+    ).await;
+
+    let request = json!({
+        "model": "gpt-4",
+        "messages": [
+            {"role": "user", "content": "Hi"}  // Short prompt
+        ]
+    });
+
+    let response = harness.server
+        .post("/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&request)
+        .await;
+
+    response.assert_status_ok();
+
+    // Wait for Zion batch-increment
+    let requests = harness.wait_for_batch_requests(1, Duration::from_secs(2)).await;
+    assert!(!requests.is_empty(), "Expected batch-increment request");
+
+    // Get the raw JSON body sent to Zion
+    let raw_body = String::from_utf8_lossy(&requests[0].body);
+    println!("\n========================================");
+    println!("RAW JSON PAYLOAD SENT TO ZION:");
+    println!("========================================");
+    println!("{}", raw_body);
+    println!("========================================\n");
+
+    // Parse and verify
+    let increments = TokenTrackingTestHarness::parse_batch_payload(&requests[0]);
+    assert!(!increments.is_empty(), "Expected at least one increment");
+
+    let item = &increments[0];
+    let input = item["aiInputTokens"].as_i64().unwrap_or(0);
+    let output = item["aiOutputTokens"].as_i64().unwrap_or(0);
+
+    println!("VERIFICATION:");
+    println!("  aiInputTokens (prompt):     {} (expected {})", input, small_input);
+    println!("  aiOutputTokens (completion): {} (expected {})", output, large_output);
+    println!("");
+
+    // Assert exact values match what OpenAI returned
+    assert_eq!(input, small_input,
+        "aiInputTokens should match prompt_tokens from OpenAI ({} != {})", input, small_input);
+    assert_eq!(output, large_output,
+        "aiOutputTokens should match completion_tokens from OpenAI ({} != {})", output, large_output);
+
+    // Assert asymmetry is preserved (input < output)
+    assert!(input < output,
+        "Input tokens ({}) should be less than output tokens ({}) - if swapped, this would fail!",
+        input, output);
+
+    println!("✓ TOKENS ARE CORRECT - NOT SWAPPED");
+    println!("  - aiInputTokens ({}) matches prompt_tokens", small_input);
+    println!("  - aiOutputTokens ({}) matches completion_tokens", large_output);
+    println!("  - Asymmetry preserved: {} < {}", input, output);
+}
+
+// =============================================================================
 // Multiple Requests Tests
 // =============================================================================
 
