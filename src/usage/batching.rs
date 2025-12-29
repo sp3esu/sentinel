@@ -657,6 +657,169 @@ impl BatchingUsageTracker {
     }
 }
 
+// =============================================================================
+// Test-only constructor for isolated testing without Redis
+// =============================================================================
+
+#[cfg(any(test, feature = "test-utils"))]
+impl BatchingUsageTracker {
+    /// Create a tracker for testing without Redis dependency
+    ///
+    /// This constructor:
+    /// - Uses MPSC channels for tracking (no Redis)
+    /// - Uses fast flush interval (10ms) for quick test completion
+    /// - Spawns a minimal background worker without retry logic
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let zion_client = Arc::new(ZionClient::new(...));
+    /// let tracker = BatchingUsageTracker::new_for_testing(zion_client);
+    /// tracker.track("user@example.com".to_string(), 100, 50);
+    /// // Usage will be sent to Zion mock after ~10ms
+    /// ```
+    pub fn new_for_testing(zion_client: Arc<ZionClient>) -> Self {
+        let config = BatchingConfig {
+            flush_interval: Duration::from_millis(10), // Fast flush for tests
+            max_batch_size: 10,                        // Small batch for tests
+            channel_buffer: 1000,                      // Smaller buffer for tests
+            ..Default::default()
+        };
+
+        let (sender, receiver) = mpsc::channel(config.channel_buffer);
+
+        // Spawn minimal worker without Redis retry
+        tokio::spawn(Self::test_background_worker(zion_client, receiver, config));
+
+        Self { sender }
+    }
+
+    /// Simplified background worker for testing (no Redis, no retry)
+    async fn test_background_worker(
+        zion_client: Arc<ZionClient>,
+        mut receiver: mpsc::Receiver<UsageIncrement>,
+        config: BatchingConfig,
+    ) {
+        use std::num::NonZeroU32;
+
+        info!(
+            batch_size = config.max_batch_size,
+            flush_interval_ms = config.flush_interval.as_millis(),
+            "Starting TEST batching usage tracker worker (no Redis)"
+        );
+
+        // Create rate limiter
+        let rate_limiter = RateLimiter::direct(Quota::per_second(
+            NonZeroU32::new(config.rate_limit_per_second).unwrap(),
+        ));
+
+        // Aggregation buffer - keyed by email
+        let mut buffer: HashMap<String, AggregatedUsage> = HashMap::new();
+        let mut last_flush = std::time::Instant::now();
+
+        loop {
+            let time_until_flush = config
+                .flush_interval
+                .saturating_sub(last_flush.elapsed());
+
+            tokio::select! {
+                maybe_increment = receiver.recv() => {
+                    match maybe_increment {
+                        Some(increment) => {
+                            buffer
+                                .entry(increment.email.clone())
+                                .or_default()
+                                .add(&increment);
+
+                            // Flush if batch is full
+                            if buffer.len() >= config.max_batch_size {
+                                Self::test_flush_buffer(&zion_client, &rate_limiter, &mut buffer).await;
+                                last_flush = std::time::Instant::now();
+                            }
+                        }
+                        None => {
+                            // Channel closed, flush remaining and exit
+                            if !buffer.is_empty() {
+                                Self::test_flush_buffer(&zion_client, &rate_limiter, &mut buffer).await;
+                            }
+                            info!("Test usage tracker shutting down");
+                            return;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(time_until_flush) => {
+                    if !buffer.is_empty() {
+                        Self::test_flush_buffer(&zion_client, &rate_limiter, &mut buffer).await;
+                        last_flush = std::time::Instant::now();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Simplified flush for testing (no circuit breaker, no Redis persistence)
+    async fn test_flush_buffer(
+        zion_client: &Arc<ZionClient>,
+        rate_limiter: &RateLimiter<
+            governor::state::NotKeyed,
+            governor::state::InMemoryState,
+            governor::clock::DefaultClock,
+        >,
+        buffer: &mut HashMap<String, AggregatedUsage>,
+    ) {
+        let increments: Vec<(String, AggregatedUsage)> = buffer
+            .drain()
+            .filter(|(_, usage)| !usage.is_empty())
+            .collect();
+
+        if increments.is_empty() {
+            return;
+        }
+
+        debug!(
+            user_count = increments.len(),
+            "TEST: Flushing usage increments to Zion"
+        );
+
+        rate_limiter.until_ready().await;
+
+        let batch_items: Vec<BatchIncrementItem> = increments
+            .iter()
+            .map(|(email, usage)| BatchIncrementItem {
+                email: email.clone(),
+                ai_input_tokens: if usage.input_tokens > 0 {
+                    Some(usage.input_tokens)
+                } else {
+                    None
+                },
+                ai_output_tokens: if usage.output_tokens > 0 {
+                    Some(usage.output_tokens)
+                } else {
+                    None
+                },
+                ai_requests: if usage.requests > 0 {
+                    Some(usage.requests)
+                } else {
+                    None
+                },
+            })
+            .collect();
+
+        match zion_client.batch_increment(batch_items).await {
+            Ok(result) => {
+                debug!(
+                    processed = result.processed,
+                    failed = result.failed,
+                    "TEST: Batch increment completed"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "TEST: Batch increment failed (no retry in test mode)");
+            }
+        }
+    }
+}
+
 /// Metrics for the batching tracker
 pub mod metrics {
     use metrics::{counter, gauge};

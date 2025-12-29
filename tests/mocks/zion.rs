@@ -51,6 +51,22 @@ impl MockZionServer {
         self.server.address().to_string()
     }
 
+    /// Get all received requests (for assertion in tests)
+    ///
+    /// Use this to verify what requests were actually sent to the mock.
+    pub async fn received_requests(&self) -> Vec<wiremock::Request> {
+        self.server.received_requests().await.unwrap_or_default()
+    }
+
+    /// Get only batch-increment requests from all received requests
+    pub async fn batch_increment_requests(&self) -> Vec<wiremock::Request> {
+        self.received_requests()
+            .await
+            .into_iter()
+            .filter(|r| r.url.path() == "/api/v1/usage/external/batch-increment")
+            .collect()
+    }
+
     // =========================================================================
     // GET /api/v1/limits/external/{id} - User Limits
     // =========================================================================

@@ -73,6 +73,11 @@ impl MockOpenAI {
         self.server.address().to_string()
     }
 
+    /// Get all received requests (for assertion in tests)
+    pub async fn received_requests(&self) -> Vec<wiremock::Request> {
+        self.server.received_requests().await.unwrap_or_default()
+    }
+
     // =========================================================================
     // POST /v1/chat/completions - Chat Completions
     // =========================================================================
