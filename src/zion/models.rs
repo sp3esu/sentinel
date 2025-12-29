@@ -533,6 +533,10 @@ mod tests {
         assert!(json.contains("\"user2@example.com\""));
         // limitName is no longer sent
         assert!(!json.contains("limitName"));
+        // Verify token data is included with correct camelCase names
+        assert!(json.contains("\"aiInputTokens\":1000"), "aiInputTokens should be present");
+        assert!(json.contains("\"aiOutputTokens\":500"), "aiOutputTokens should be present");
+        assert!(json.contains("\"aiRequests\":1"), "aiRequests should be present");
     }
 
     #[test]
