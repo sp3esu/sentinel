@@ -64,7 +64,17 @@ pub struct SimpleHealthResponse {
 /// Check Redis connectivity
 async fn check_redis(state: &AppState) -> DependencyCheck {
     let start = Instant::now();
-    let mut conn = state.redis.clone();
+
+    // In test mode, Redis may not be configured
+    let Some(ref redis) = state.redis else {
+        return DependencyCheck {
+            status: HealthStatus::Healthy,
+            latency_ms: 0,
+            error: Some("Redis not configured (test mode)".to_string()),
+        };
+    };
+
+    let mut conn = redis.clone();
 
     match redis::cmd("PING")
         .query_async::<_, String>(&mut conn)

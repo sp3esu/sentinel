@@ -29,7 +29,8 @@ pub use crate::zion::ZionClient;
 /// Application state shared across all request handlers
 pub struct AppState {
     pub config: Config,
-    pub redis: redis::aio::ConnectionManager,
+    /// Redis connection - None in test mode with InMemoryCache
+    pub redis: Option<redis::aio::ConnectionManager>,
     pub http_client: reqwest::Client,
     pub start_time: Instant,
     pub zion_client: Arc<ZionClient>,
@@ -93,7 +94,7 @@ impl AppState {
 
         Ok(Self {
             config,
-            redis,
+            redis: Some(redis),
             http_client,
             start_time: Instant::now(),
             zion_client,
@@ -105,31 +106,32 @@ impl AppState {
         })
     }
 
-    /// Create a new application state for testing with real Redis but mocked HTTP services
+    /// Create a new application state for testing with in-memory cache (no Redis required)
     ///
-    /// This constructor creates a real AppState that uses:
-    /// - Real Redis connection (required for caching)
+    /// This constructor creates a test AppState that uses:
+    /// - In-memory cache (no Redis required)
     /// - Mock Zion client (pointing to wiremock server)
     /// - Mock AI provider (pointing to wiremock server)
     /// - Test batching tracker (without Redis retry)
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn new_for_testing(
         config: Config,
-        redis: redis::aio::ConnectionManager,
         zion_client: Arc<ZionClient>,
         ai_provider: Arc<dyn AiProvider>,
         batching_tracker: Arc<BatchingUsageTracker>,
     ) -> Self {
+        use crate::cache::InMemoryCache;
+
         let http_client = reqwest::Client::new();
         let token_counter = SharedTokenCounter::new();
         let usage_tracker = Arc::new(UsageTracker::new(zion_client.clone()));
 
-        // Create Redis cache with short TTL for testing
-        let redis_cache = Arc::new(RedisCache::new(redis.clone(), 60));
+        // Create in-memory cache for testing (no Redis required)
+        let in_memory_cache = Arc::new(InMemoryCache::new(60));
 
-        // Create subscription cache with short TTLs for testing
-        let subscription_cache = Arc::new(SubscriptionCache::new(
-            redis_cache,
+        // Create subscription cache with in-memory backend
+        let subscription_cache = Arc::new(SubscriptionCache::new_for_testing(
+            in_memory_cache,
             zion_client.clone(),
             60, // 1 minute TTL for limits
             60, // 1 minute TTL for JWT
@@ -137,7 +139,7 @@ impl AppState {
 
         Self {
             config,
-            redis,
+            redis: None, // No Redis in test mode
             http_client,
             start_time: Instant::now(),
             zion_client,

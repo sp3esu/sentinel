@@ -332,31 +332,25 @@ pub struct TokenTrackingTestHarness {
 impl TokenTrackingTestHarness {
     /// Create a new test harness
     ///
-    /// Requires Redis to be running locally on the default port.
+    /// Uses in-memory cache - no Redis required.
     pub async fn new() -> Self {
         // Start mock servers
         let openai = MockOpenAI::start().await;
         let zion = MockZionServer::start().await;
 
         // Create config pointing to mocks
+        // Note: OpenAI URL needs /v1 suffix to match real API structure
         let config = Config {
             host: "127.0.0.1".to_string(),
             port: 0,
-            redis_url: "redis://localhost:6379".to_string(),
+            redis_url: "redis://localhost:6379".to_string(), // Not used in test mode
             zion_api_url: zion.uri(),
             zion_api_key: constants::TEST_ZION_API_KEY.to_string(),
-            openai_api_url: openai.uri(),
+            openai_api_url: format!("{}/v1", openai.uri()),
             openai_api_key: Some(constants::TEST_OPENAI_API_KEY.to_string()),
             cache_ttl_seconds: 60,
             jwt_cache_ttl_seconds: 60,
         };
-
-        // Connect to Redis
-        let redis_client = redis::Client::open(config.redis_url.as_str())
-            .expect("Failed to create Redis client");
-        let redis = redis::aio::ConnectionManager::new(redis_client)
-            .await
-            .expect("Failed to connect to Redis - ensure Redis is running");
 
         // Create HTTP client
         let http_client = reqwest::Client::new();
@@ -372,11 +366,10 @@ impl TokenTrackingTestHarness {
             OpenAIProvider::new(http_client, &config)
         );
 
-        // Create app state
+        // Create app state with in-memory cache (no Redis required)
         let state = Arc::new(
             AppState::new_for_testing(
                 config,
-                redis,
                 zion_client,
                 ai_provider,
                 batching_tracker,

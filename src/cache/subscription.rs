@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, instrument};
 
 use crate::{
@@ -12,19 +13,65 @@ use crate::{
     zion::{IncrementUsageData, UserLimit, UserProfile, ZionClient},
 };
 
+#[cfg(any(test, feature = "test-utils"))]
+use crate::cache::InMemoryCache;
+
+/// Cache backend abstraction for SubscriptionCache
+///
+/// This enum allows SubscriptionCache to work with either Redis or in-memory
+/// caching, enabling fully isolated integration tests.
+pub enum CacheBackend {
+    /// Redis-based cache for production use
+    Redis(Arc<RedisCache>),
+    /// In-memory cache for testing (only available with test-utils feature)
+    #[cfg(any(test, feature = "test-utils"))]
+    InMemory(Arc<InMemoryCache>),
+}
+
+impl CacheBackend {
+    async fn get<T: DeserializeOwned>(&self, key: &str) -> AppResult<Option<T>> {
+        match self {
+            CacheBackend::Redis(cache) => cache.get(key).await,
+            #[cfg(any(test, feature = "test-utils"))]
+            CacheBackend::InMemory(cache) => cache.get(key).await,
+        }
+    }
+
+    async fn set_with_ttl<T: Serialize>(
+        &self,
+        key: &str,
+        value: &T,
+        ttl_seconds: u64,
+    ) -> AppResult<()> {
+        match self {
+            CacheBackend::Redis(cache) => cache.set_with_ttl(key, value, ttl_seconds).await,
+            #[cfg(any(test, feature = "test-utils"))]
+            CacheBackend::InMemory(cache) => cache.set_with_ttl(key, value, ttl_seconds).await,
+        }
+    }
+
+    async fn delete(&self, key: &str) -> AppResult<()> {
+        match self {
+            CacheBackend::Redis(cache) => cache.delete(key).await,
+            #[cfg(any(test, feature = "test-utils"))]
+            CacheBackend::InMemory(cache) => cache.delete(key).await,
+        }
+    }
+}
+
 /// Subscription cache service
 ///
 /// This service provides a caching layer on top of the Zion API,
 /// caching user limits and JWT validation results in Redis.
 pub struct SubscriptionCache {
-    cache: Arc<RedisCache>,
+    cache: CacheBackend,
     zion_client: Arc<ZionClient>,
     limits_ttl: u64,
     jwt_ttl: u64,
 }
 
 impl SubscriptionCache {
-    /// Create a new subscription cache
+    /// Create a new subscription cache with Redis backend
     pub fn new(
         cache: Arc<RedisCache>,
         zion_client: Arc<ZionClient>,
@@ -32,7 +79,23 @@ impl SubscriptionCache {
         jwt_ttl: u64,
     ) -> Self {
         Self {
-            cache,
+            cache: CacheBackend::Redis(cache),
+            zion_client,
+            limits_ttl,
+            jwt_ttl,
+        }
+    }
+
+    /// Create a new subscription cache with in-memory backend for testing
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_for_testing(
+        cache: Arc<InMemoryCache>,
+        zion_client: Arc<ZionClient>,
+        limits_ttl: u64,
+        jwt_ttl: u64,
+    ) -> Self {
+        Self {
+            cache: CacheBackend::InMemory(cache),
             zion_client,
             limits_ttl,
             jwt_ttl,

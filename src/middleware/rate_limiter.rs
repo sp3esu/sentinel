@@ -134,7 +134,19 @@ pub async fn check_rate_limit(
     user_id: &str,
     config: &RateLimitConfig,
 ) -> Result<RateLimitResult, AppError> {
-    let mut conn = state.redis.clone();
+    // In test mode, Redis may not be configured - skip rate limiting
+    let Some(ref redis) = state.redis else {
+        let now = chrono::Utc::now().timestamp();
+        return Ok(RateLimitResult {
+            allowed: true,
+            limit: config.max_requests,
+            remaining: config.max_requests,
+            reset_at: now + config.window_seconds as i64,
+            current: 0,
+        });
+    };
+
+    let mut conn = redis.clone();
     let now = chrono::Utc::now().timestamp();
 
     // Calculate window boundaries
@@ -191,7 +203,19 @@ pub async fn increment_rate_limit(
     config: &RateLimitConfig,
     amount: i64,
 ) -> Result<RateLimitResult, AppError> {
-    let mut conn = state.redis.clone();
+    // In test mode, Redis may not be configured - skip rate limiting
+    let Some(ref redis) = state.redis else {
+        let now = chrono::Utc::now().timestamp();
+        return Ok(RateLimitResult {
+            allowed: true,
+            limit: config.max_requests,
+            remaining: config.max_requests - amount,
+            reset_at: now + config.window_seconds as i64,
+            current: amount,
+        });
+    };
+
+    let mut conn = redis.clone();
     let now = chrono::Utc::now().timestamp();
 
     // Calculate window boundaries
