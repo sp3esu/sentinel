@@ -19,6 +19,7 @@ use tracing::{info, warn};
 
 use crate::{
     error::AppError,
+    middleware::auth::AuthenticatedUser,
     routes::metrics::{record_request, record_tokens},
     AppState,
 };
@@ -108,11 +109,30 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
 pub async fn completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<CompletionRequest>,
+    request: axum::extract::Request,
 ) -> Result<Response, AppError> {
     let start_time = Instant::now();
-    let model = request.model.clone();
-    let is_streaming = request.stream;
+
+    // Extract authenticated user from request extensions (set by auth middleware)
+    let user = request
+        .extensions()
+        .get::<AuthenticatedUser>()
+        .cloned()
+        .ok_or_else(|| {
+            warn!("AuthenticatedUser not found in request extensions");
+            AppError::Unauthorized
+        })?;
+
+    // Parse the request body
+    let body = axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read request body: {}", e)))?;
+
+    let completion_request: CompletionRequest = serde_json::from_slice(&body)
+        .map_err(|e| AppError::BadRequest(format!("Invalid request body: {}", e)))?;
+
+    let model = completion_request.model.clone();
+    let is_streaming = completion_request.stream;
 
     // Extract authorization token (kept for potential future use)
     let _token = extract_bearer_token(&headers);
@@ -120,15 +140,16 @@ pub async fn completions(
     info!(
         model = %model,
         stream = %is_streaming,
+        external_id = %user.external_id,
         "Processing completion request"
     );
 
     if is_streaming {
         // Handle streaming response
-        handle_streaming_completion(state, &headers, request, model, start_time).await
+        handle_streaming_completion(state, &headers, completion_request, model, start_time, user).await
     } else {
         // Handle non-streaming response
-        handle_non_streaming_completion(state, &headers, request, model, start_time).await
+        handle_non_streaming_completion(state, &headers, completion_request, model, start_time, user).await
     }
 }
 
@@ -139,6 +160,7 @@ async fn handle_non_streaming_completion(
     request: CompletionRequest,
     model: String,
     start_time: Instant,
+    user: AuthenticatedUser,
 ) -> Result<Response, AppError> {
     // Convert request to Value for the provider
     let request_value = serde_json::to_value(&request)
@@ -160,15 +182,30 @@ async fn handle_non_streaming_completion(
     if let Some(ref usage) = response.usage {
         record_tokens("prompt", usage.prompt_tokens as u64, &model);
         record_tokens("completion", usage.completion_tokens as u64, &model);
+
+        // Track usage in Zion (fire-and-forget, never blocks)
+        state.batching_tracker.track(
+            user.email.clone(),
+            usage.prompt_tokens as u64,
+            usage.completion_tokens as u64,
+        );
     }
 
     info!(
         model = %model,
         duration_ms = %format!("{:.2}", duration * 1000.0),
+        external_id = %user.external_id,
         "Completion request completed"
     );
 
     Ok((StatusCode::OK, Json(response)).into_response())
+}
+
+/// Streaming chunk for parsing usage
+#[derive(Debug, Clone, Deserialize)]
+struct StreamChunk {
+    #[serde(default)]
+    usage: Option<Usage>,
 }
 
 /// Handle streaming completion
@@ -178,6 +215,7 @@ async fn handle_streaming_completion(
     request: CompletionRequest,
     model: String,
     start_time: Instant,
+    user: AuthenticatedUser,
 ) -> Result<Response, AppError> {
     // Convert request to Value for the provider
     let request_value = serde_json::to_value(&request)
@@ -189,28 +227,86 @@ async fn handle_streaming_completion(
         .completions_stream(request_value, headers)
         .await?;
 
+    // Clone values for the stream closure
     let model_clone = model.clone();
+    let tracker = state.batching_tracker.clone();
+    let user_email = user.email.clone();
 
-    // Wrap the stream to add metrics tracking on completion
-    let tracked_stream = stream.then(move |chunk| {
-        let model_for_logging = model_clone.clone();
-        async move {
-            match chunk {
-                Ok(bytes) => Ok(bytes),
-                Err(e) => {
-                    warn!(model = %model_for_logging, error = %e, "Stream error");
-                    Err(e)
+    // Track accumulated usage from stream
+    let usage_accumulator = std::sync::Arc::new(std::sync::Mutex::new(Usage::default()));
+    let usage_for_stream = usage_accumulator.clone();
+
+    // Wrap the stream to extract usage from chunks
+    let tracked_stream = stream.map(move |chunk| {
+        match chunk {
+            Ok(bytes) => {
+                // Try to parse usage from SSE chunks
+                if let Ok(text) = std::str::from_utf8(&bytes) {
+                    for line in text.lines() {
+                        if let Some(json_str) = line.strip_prefix("data: ") {
+                            if json_str != "[DONE]" {
+                                if let Ok(chunk) = serde_json::from_str::<StreamChunk>(json_str) {
+                                    if let Some(usage) = chunk.usage {
+                                        let mut acc = usage_for_stream.lock().unwrap();
+                                        acc.prompt_tokens = usage.prompt_tokens;
+                                        acc.completion_tokens = usage.completion_tokens;
+                                        acc.total_tokens = usage.total_tokens;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
+                Ok(bytes)
+            }
+            Err(e) => {
+                warn!(model = %model_clone, error = %e, "Stream error");
+                Err(e)
             }
         }
     });
+
+    // Create a stream that tracks usage after completion
+    let user_email_final = user_email.clone();
+    let model_for_metrics = model.clone();
+    let usage_final = usage_accumulator.clone();
+    let tracker_final = tracker.clone();
+
+    let final_stream = async_stream::stream! {
+        futures::pin_mut!(tracked_stream);
+        while let Some(item) = tracked_stream.next().await {
+            yield item;
+        }
+
+        // Stream completed - record metrics and track usage
+        let usage = usage_final.lock().unwrap().clone();
+        if usage.prompt_tokens > 0 || usage.completion_tokens > 0 {
+            record_tokens("prompt", usage.prompt_tokens as u64, &model_for_metrics);
+            record_tokens("completion", usage.completion_tokens as u64, &model_for_metrics);
+
+            // Track usage in Zion (fire-and-forget)
+            tracker_final.track(
+                user_email_final.clone(),
+                usage.prompt_tokens as u64,
+                usage.completion_tokens as u64,
+            );
+
+            info!(
+                model = %model_for_metrics,
+                prompt_tokens = usage.prompt_tokens,
+                completion_tokens = usage.completion_tokens,
+                email = %user_email_final,
+                "Streaming completion usage tracked"
+            );
+        }
+    };
 
     // Record that we started streaming
     let duration = start_time.elapsed().as_secs_f64();
     record_request("streaming", &model, duration);
 
     // Build SSE response
-    let body = Body::from_stream(tracked_stream);
+    let body = Body::from_stream(final_stream);
 
     let response = Response::builder()
         .status(StatusCode::OK)

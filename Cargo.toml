@@ -49,6 +49,7 @@ metrics-exporter-prometheus = "0.13"
 # Async utilities
 futures = "0.3"
 async-trait = "0.1"
+async-stream = "0.3"
 bytes = "1"
 http-body-util = "0.1"
 
