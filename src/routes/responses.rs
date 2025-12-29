@@ -1,77 +1,396 @@
 //! OpenAI Responses API handler
 //!
-//! Routes /v1/responses directly to OpenAI since this endpoint
-//! is specific to OpenAI and not available through all providers.
+//! Routes /v1/responses to OpenAI with full token tracking.
+//! The Responses API uses `input` array (similar to chat messages) instead of `messages`.
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::{
+    body::Body,
     extract::State,
-    http::{header::HeaderMap, Method},
-    response::Response,
-    Extension,
+    http::{header, HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
 };
-use tracing::info;
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 use crate::{
     error::AppError,
     middleware::auth::AuthenticatedUser,
-    routes::metrics::record_request,
+    routes::metrics::{record_request, record_tokens},
     AppState,
 };
 
+/// Input message in responses API (same format as chat messages)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InputMessage {
+    pub role: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Responses API request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponsesRequest {
+    pub model: String,
+    #[serde(default)]
+    pub input: Vec<InputMessage>,
+    #[serde(default)]
+    pub stream: bool,
+    // Pass through all other fields
+    #[serde(flatten)]
+    pub extra: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Usage statistics (same as chat completions)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Usage {
+    #[serde(default)]
+    pub input_tokens: u32,
+    #[serde(default)]
+    pub output_tokens: u32,
+    #[serde(default)]
+    pub total_tokens: u32,
+}
+
+/// Responses API response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponsesResponse {
+    pub id: String,
+    #[serde(default)]
+    pub output: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+    // Pass through all other fields
+    #[serde(flatten)]
+    pub extra: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Convert input messages to tuples for token counting
+fn input_to_tuples(input: &[InputMessage]) -> Vec<(String, String, Option<String>)> {
+    input
+        .iter()
+        .map(|msg| {
+            (
+                msg.role.clone(),
+                msg.content.clone().unwrap_or_default(),
+                msg.name.clone(),
+            )
+        })
+        .collect()
+}
+
+/// Extract text content from output array for token counting
+fn extract_output_text(output: &[serde_json::Value]) -> String {
+    let mut text = String::new();
+    for item in output {
+        // Try to extract content from various possible formats
+        if let Some(content) = item.get("content") {
+            if let Some(s) = content.as_str() {
+                text.push_str(s);
+            } else if let Some(arr) = content.as_array() {
+                for part in arr {
+                    if let Some(text_content) = part.get("text").and_then(|t| t.as_str()) {
+                        text.push_str(text_content);
+                    }
+                }
+            }
+        }
+        // Also check for text field directly
+        if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+            text.push_str(t);
+        }
+    }
+    text
+}
+
 /// Handler for POST /v1/responses
-///
-/// This endpoint routes directly to OpenAI API.
 pub async fn responses_handler(
     State(state): State<Arc<AppState>>,
-    method: Method,
     headers: HeaderMap,
-    Extension(user): Extension<AuthenticatedUser>,
     request: axum::extract::Request,
 ) -> Result<Response, AppError> {
     let start_time = Instant::now();
-    let path = "/responses";
+
+    // Extract authenticated user from request extensions (set by auth middleware)
+    let user = request
+        .extensions()
+        .get::<AuthenticatedUser>()
+        .cloned()
+        .ok_or_else(|| {
+            warn!("AuthenticatedUser not found in request extensions");
+            AppError::Unauthorized
+        })?;
+
+    // Parse the request body
+    let body = axum::body::to_bytes(request.into_body(), usize::MAX)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read request body: {}", e)))?;
+
+    let responses_request: ResponsesRequest = serde_json::from_slice(&body)
+        .map_err(|e| AppError::BadRequest(format!("Invalid request body: {}", e)))?;
+
+    let model = responses_request.model.clone();
+    let is_streaming = responses_request.stream;
 
     info!(
-        method = %method,
-        path = %path,
+        model = %model,
+        stream = %is_streaming,
+        input_items = %responses_request.input.len(),
         external_id = %user.external_id,
-        "Processing OpenAI Responses API request"
+        "Processing responses API request"
     );
 
-    // Extract body from request
-    let body = request.into_body();
+    if is_streaming {
+        handle_streaming_responses(state, &headers, responses_request, model, start_time, user).await
+    } else {
+        handle_non_streaming_responses(state, &headers, responses_request, model, start_time, user).await
+    }
+}
 
-    // Forward the request using the AI provider
-    let response = state
+/// Handle non-streaming responses
+async fn handle_non_streaming_responses(
+    state: Arc<AppState>,
+    headers: &HeaderMap,
+    request: ResponsesRequest,
+    model: String,
+    start_time: Instant,
+    user: AuthenticatedUser,
+) -> Result<Response, AppError> {
+    // Pre-count input tokens using tiktoken
+    let input_tuples = input_to_tuples(&request.input);
+    let estimated_input_tokens = state
+        .token_counter
+        .count_chat_messages(&model, &input_tuples)
+        .unwrap_or(0);
+
+    // Convert request to Value for the provider
+    let request_value = serde_json::to_value(&request)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {}", e)))?;
+
+    let response_value = state
         .ai_provider
-        .forward_raw(method.clone(), path, headers, body)
+        .responses(request_value, headers)
         .await?;
+
+    // Parse the response
+    let response: ResponsesResponse = serde_json::from_value(response_value.clone())
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to parse response: {}", e)))?;
 
     // Record metrics
     let duration = start_time.elapsed().as_secs_f64();
-    let status_label = if response.status().is_success() {
-        "success"
-    } else {
-        "error"
-    };
-    record_request(status_label, "/v1/responses", duration);
+    record_request("success", &model, duration);
 
-    // Track request count only (no token tracking for responses endpoint)
-    state
-        .batching_tracker
-        .track_request_only(user.email.clone());
+    // Get token counts: prefer OpenAI usage, fallback to estimation
+    let (input_tokens, output_tokens) = if let Some(ref usage) = response.usage {
+        (usage.input_tokens as u64, usage.output_tokens as u64)
+    } else {
+        // Fallback: use estimated input tokens, estimate output from response text
+        let output_text = extract_output_text(&response.output);
+        let estimated_output = state
+            .token_counter
+            .count_tokens(&model, &output_text)
+            .unwrap_or(0) as u64;
+        debug!(
+            estimated_input = estimated_input_tokens,
+            estimated_output = estimated_output,
+            "Using estimated token counts (OpenAI didn't return usage)"
+        );
+        (estimated_input_tokens as u64, estimated_output)
+    };
+
+    record_tokens("prompt", input_tokens, &model);
+    record_tokens("completion", output_tokens, &model);
+
+    // Track usage in Zion (fire-and-forget, never blocks)
+    state.batching_tracker.track(user.email.clone(), input_tokens, output_tokens);
 
     info!(
-        method = %method,
-        path = %path,
-        status = %response.status(),
+        model = %model,
         duration_ms = %format!("{:.2}", duration * 1000.0),
+        input_tokens = input_tokens,
+        output_tokens = output_tokens,
         external_id = %user.external_id,
-        "OpenAI Responses API request completed"
+        "Responses API request completed"
     );
+
+    Ok((StatusCode::OK, Json(response)).into_response())
+}
+
+/// Streaming chunk for parsing content and usage
+#[derive(Debug, Clone, Deserialize)]
+struct StreamChunk {
+    #[serde(default)]
+    output: Vec<serde_json::Value>,
+    #[serde(default)]
+    usage: Option<Usage>,
+    #[serde(default, rename = "type")]
+    chunk_type: Option<String>,
+    #[serde(default)]
+    delta: Option<serde_json::Value>,
+}
+
+/// Handle streaming responses
+async fn handle_streaming_responses(
+    state: Arc<AppState>,
+    headers: &HeaderMap,
+    request: ResponsesRequest,
+    model: String,
+    start_time: Instant,
+    user: AuthenticatedUser,
+) -> Result<Response, AppError> {
+    // Pre-count input tokens using tiktoken
+    let input_tuples = input_to_tuples(&request.input);
+    let estimated_input_tokens = state
+        .token_counter
+        .count_chat_messages(&model, &input_tuples)
+        .unwrap_or(0) as u64;
+
+    // Convert request to Value for the provider
+    let request_value = serde_json::to_value(&request)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to serialize request: {}", e)))?;
+
+    // Forward streaming request to provider
+    let stream = state
+        .ai_provider
+        .responses_stream(request_value, headers)
+        .await?;
+
+    // Clone values for the stream closure
+    let model_clone = model.clone();
+    let tracker = state.batching_tracker.clone();
+    let user_email = user.email.clone();
+    let token_counter = state.token_counter.clone();
+
+    // Track accumulated usage from stream (if OpenAI provides it)
+    let usage_accumulator = std::sync::Arc::new(std::sync::Mutex::new(Usage::default()));
+    let usage_for_stream = usage_accumulator.clone();
+
+    // Track accumulated content for token counting fallback
+    let content_accumulator = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let content_for_stream = content_accumulator.clone();
+
+    // Wrap the stream to extract content and usage from chunks
+    let tracked_stream = stream.map(move |chunk| {
+        match chunk {
+            Ok(bytes) => {
+                // Try to parse content and usage from SSE chunks
+                if let Ok(text) = std::str::from_utf8(&bytes) {
+                    for line in text.lines() {
+                        if let Some(json_str) = line.strip_prefix("data: ") {
+                            if json_str != "[DONE]" {
+                                match serde_json::from_str::<StreamChunk>(json_str) {
+                                    Ok(chunk) => {
+                                        // Accumulate content from output or delta
+                                        if !chunk.output.is_empty() {
+                                            let output_text = extract_output_text(&chunk.output);
+                                            content_for_stream.lock().unwrap().push_str(&output_text);
+                                        }
+                                        if let Some(ref delta) = chunk.delta {
+                                            // Try to extract text from delta
+                                            if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                                content_for_stream.lock().unwrap().push_str(text);
+                                            }
+                                            if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                                content_for_stream.lock().unwrap().push_str(content);
+                                            }
+                                        }
+                                        // Capture usage if provided
+                                        if let Some(usage) = chunk.usage {
+                                            let mut acc = usage_for_stream.lock().unwrap();
+                                            acc.input_tokens = usage.input_tokens;
+                                            acc.output_tokens = usage.output_tokens;
+                                            acc.total_tokens = usage.total_tokens;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        debug!(error = %e, chunk = %json_str, "Failed to parse SSE chunk");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(bytes)
+            }
+            Err(e) => {
+                warn!(model = %model_clone, error = %e, "Stream error");
+                Err(e)
+            }
+        }
+    });
+
+    // Create a stream that tracks usage after completion
+    let user_email_final = user_email.clone();
+    let model_for_metrics = model.clone();
+    let model_for_counting = model.clone();
+    let usage_final = usage_accumulator.clone();
+    let content_final = content_accumulator.clone();
+    let tracker_final = tracker.clone();
+
+    let final_stream = async_stream::stream! {
+        futures::pin_mut!(tracked_stream);
+        while let Some(item) = tracked_stream.next().await {
+            yield item;
+        }
+
+        // Stream completed - determine token counts
+        let openai_usage = usage_final.lock().unwrap().clone();
+        let accumulated_content = content_final.lock().unwrap().clone();
+
+        // Prefer OpenAI usage if available, otherwise estimate
+        let (input_tokens, output_tokens) = if openai_usage.input_tokens > 0 || openai_usage.output_tokens > 0 {
+            (openai_usage.input_tokens as u64, openai_usage.output_tokens as u64)
+        } else {
+            // Fallback to estimation
+            let estimated_output = token_counter
+                .count_tokens(&model_for_counting, &accumulated_content)
+                .unwrap_or(0) as u64;
+            debug!(
+                estimated_input = estimated_input_tokens,
+                estimated_output = estimated_output,
+                content_len = accumulated_content.len(),
+                "Using estimated token counts for streaming (OpenAI didn't return usage)"
+            );
+            (estimated_input_tokens, estimated_output)
+        };
+
+        // Record metrics
+        record_tokens("prompt", input_tokens, &model_for_metrics);
+        record_tokens("completion", output_tokens, &model_for_metrics);
+
+        // ALWAYS track usage in Zion (fire-and-forget)
+        tracker_final.track(user_email_final.clone(), input_tokens, output_tokens);
+
+        info!(
+            model = %model_for_metrics,
+            input_tokens = input_tokens,
+            output_tokens = output_tokens,
+            email = %user_email_final,
+            "Streaming responses usage tracked"
+        );
+    };
+
+    // Record that we started streaming
+    let duration = start_time.elapsed().as_secs_f64();
+    record_request("streaming", &model, duration);
+
+    // Build SSE response
+    let body = Body::from_stream(final_stream);
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
+        .header("X-Accel-Buffering", "no")
+        .body(body)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to build response: {}", e)))?;
 
     Ok(response)
 }

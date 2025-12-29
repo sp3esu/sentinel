@@ -94,6 +94,25 @@ pub trait AiProvider: Send + Sync {
     /// Returns details about a specific model.
     async fn get_model(&self, model_id: &str) -> AppResult<serde_json::Value>;
 
+    /// Responses API (non-streaming)
+    ///
+    /// Sends a responses request and returns the full response.
+    /// Used for OpenAI's newer Responses API.
+    async fn responses(
+        &self,
+        request: serde_json::Value,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<serde_json::Value>;
+
+    /// Responses API (streaming)
+    ///
+    /// Sends a responses request and returns a stream of response chunks.
+    async fn responses_stream(
+        &self,
+        request: serde_json::Value,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<ByteStream>;
+
     /// Forward a raw request (pass-through)
     ///
     /// Forwards an arbitrary request to the provider's API.

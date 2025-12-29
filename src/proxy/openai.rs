@@ -300,6 +300,30 @@ impl AiProvider for OpenAIProvider {
         self.get(&format!("/models/{}", model_id), &ctx).await
     }
 
+    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "responses"))]
+    async fn responses(
+        &self,
+        request: serde_json::Value,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<serde_json::Value> {
+        let ctx = RequestContext::new(self.name(), "/v1/responses");
+        ctx.log_request_start();
+        self.post("/responses", &request, incoming_headers, &ctx)
+            .await
+    }
+
+    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "responses", streaming = true))]
+    async fn responses_stream(
+        &self,
+        request: serde_json::Value,
+        incoming_headers: &HeaderMap,
+    ) -> AppResult<ByteStream> {
+        let ctx = RequestContext::new(self.name(), "/v1/responses").with_streaming(true);
+        ctx.log_request_start();
+        self.post_stream("/responses", &request, incoming_headers, &ctx)
+            .await
+    }
+
     #[instrument(skip(self, incoming_headers, body), fields(provider = "openai", method = %method, path = %path))]
     async fn forward_raw(
         &self,
