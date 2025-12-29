@@ -70,6 +70,10 @@ pub struct IncrementUsageRequest {
     pub ai_output_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_requests: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,      // AI model name (e.g., "gpt-4o")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,  // ISO 8601 UTC timestamp
 }
 
 /// Response data from single increment endpoint
@@ -103,6 +107,10 @@ pub struct BatchIncrementItem {
     pub ai_output_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_requests: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,      // AI model name (e.g., "gpt-4o")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,  // ISO 8601 UTC timestamp
 }
 
 /// Batch increment request (up to 1000 items)
@@ -432,6 +440,8 @@ mod tests {
             ai_input_tokens: Some(100),
             ai_output_tokens: Some(50),
             ai_requests: Some(1),
+            model: None,
+            timestamp: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -450,6 +460,8 @@ mod tests {
             ai_input_tokens: Some(100),
             ai_output_tokens: None,
             ai_requests: None,
+            model: None,
+            timestamp: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -481,11 +493,55 @@ mod tests {
             ai_input_tokens: Some(100),
             ai_output_tokens: Some(50),
             ai_requests: Some(1),
+            model: Some("gpt-4o".to_string()),
+            timestamp: Some("2024-01-15T10:30:00Z".to_string()),
         };
 
         let cloned = request.clone();
         assert_eq!(request.email, cloned.email);
         assert_eq!(request.ai_input_tokens, cloned.ai_input_tokens);
+        assert_eq!(request.model, cloned.model);
+        assert_eq!(request.timestamp, cloned.timestamp);
+    }
+
+    #[test]
+    fn test_serialize_increment_request_with_model_and_timestamp() {
+        let request = IncrementUsageRequest {
+            email: "user123@example.com".to_string(),
+            ai_input_tokens: Some(100),
+            ai_output_tokens: Some(50),
+            ai_requests: Some(1),
+            model: Some("gpt-4o".to_string()),
+            timestamp: Some("2024-01-15T10:30:00Z".to_string()),
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"email\":\"user123@example.com\""));
+        assert!(json.contains("\"aiInputTokens\":100"));
+        assert!(json.contains("\"aiOutputTokens\":50"));
+        assert!(json.contains("\"aiRequests\":1"));
+        assert!(json.contains("\"model\":\"gpt-4o\""));
+        assert!(json.contains("\"timestamp\":\"2024-01-15T10:30:00Z\""));
+    }
+
+    #[test]
+    fn test_deserialize_increment_request_with_model_and_timestamp() {
+        let json = r#"{
+            "email": "user@example.com",
+            "aiInputTokens": 1000,
+            "aiOutputTokens": 500,
+            "aiRequests": 1,
+            "model": "gpt-4o",
+            "timestamp": "2024-01-15T10:30:00Z"
+        }"#;
+
+        let request: IncrementUsageRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.email, "user@example.com");
+        assert_eq!(request.ai_input_tokens, Some(1000));
+        assert_eq!(request.ai_output_tokens, Some(500));
+        assert_eq!(request.ai_requests, Some(1));
+        assert_eq!(request.model, Some("gpt-4o".to_string()));
+        assert_eq!(request.timestamp, Some("2024-01-15T10:30:00Z".to_string()));
     }
 
     // ===========================================
@@ -499,6 +555,8 @@ mod tests {
             ai_input_tokens: Some(1000),
             ai_output_tokens: Some(500),
             ai_requests: Some(1),
+            model: None,
+            timestamp: None,
         };
 
         let json = serde_json::to_string(&item).unwrap();
@@ -517,12 +575,16 @@ mod tests {
                     ai_input_tokens: Some(1000),
                     ai_output_tokens: Some(500),
                     ai_requests: Some(1),
+                    model: Some("gpt-4o".to_string()),
+                    timestamp: Some("2024-01-15T10:30:00Z".to_string()),
                 },
                 BatchIncrementItem {
                     email: "user2@example.com".to_string(),
                     ai_input_tokens: Some(2000),
                     ai_output_tokens: None,
                     ai_requests: Some(1),
+                    model: None,
+                    timestamp: None,
                 },
             ],
         };
@@ -537,6 +599,9 @@ mod tests {
         assert!(json.contains("\"aiInputTokens\":1000"), "aiInputTokens should be present");
         assert!(json.contains("\"aiOutputTokens\":500"), "aiOutputTokens should be present");
         assert!(json.contains("\"aiRequests\":1"), "aiRequests should be present");
+        // Verify model and timestamp are included for first item
+        assert!(json.contains("\"model\":\"gpt-4o\""), "model should be present");
+        assert!(json.contains("\"timestamp\":\"2024-01-15T10:30:00Z\""), "timestamp should be present");
     }
 
     #[test]
@@ -900,6 +965,8 @@ mod tests {
             ai_input_tokens: Some(1000),
             ai_output_tokens: Some(500),
             ai_requests: Some(1),
+            model: Some("gpt-4o".to_string()),
+            timestamp: Some("2024-01-15T10:30:00Z".to_string()),
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -909,6 +976,8 @@ mod tests {
         assert_eq!(original.ai_input_tokens, deserialized.ai_input_tokens);
         assert_eq!(original.ai_output_tokens, deserialized.ai_output_tokens);
         assert_eq!(original.ai_requests, deserialized.ai_requests);
+        assert_eq!(original.model, deserialized.model);
+        assert_eq!(original.timestamp, deserialized.timestamp);
     }
 
     #[test]
