@@ -45,6 +45,14 @@ fn register_metrics() {
         "sentinel_active_connections",
         "Number of active connections"
     );
+    metrics::describe_histogram!(
+        "sentinel_token_estimation_diff",
+        "Difference between estimated and actual input tokens (actual - estimated)"
+    );
+    metrics::describe_histogram!(
+        "sentinel_token_estimation_diff_pct",
+        "Percentage difference between estimated and actual input tokens"
+    );
 }
 
 /// Prometheus metrics endpoint handler
@@ -85,6 +93,31 @@ pub fn record_cache_operation(operation: &str, result: &str) {
 /// Update active connections gauge
 pub fn set_active_connections(count: f64) {
     metrics::gauge!("sentinel_active_connections").set(count);
+}
+
+/// Record token estimation accuracy metrics
+///
+/// Records the difference between our tiktoken-based estimation and OpenAI's
+/// actual reported token count. Useful for monitoring estimation accuracy.
+pub fn record_token_estimation_diff(model: &str, estimated: u64, actual: u64) {
+    let diff = (actual as i64) - (estimated as i64);
+    let diff_pct = if estimated > 0 {
+        diff as f64 / estimated as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    metrics::histogram!(
+        "sentinel_token_estimation_diff",
+        "model" => model.to_string()
+    )
+    .record(diff as f64);
+
+    metrics::histogram!(
+        "sentinel_token_estimation_diff_pct",
+        "model" => model.to_string()
+    )
+    .record(diff_pct);
 }
 
 #[cfg(test)]
