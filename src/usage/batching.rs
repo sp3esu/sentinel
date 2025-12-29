@@ -17,6 +17,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use governor::{Quota, RateLimiter};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -71,14 +72,17 @@ struct UsageIncrement {
     input_tokens: i64,
     output_tokens: i64,
     requests: i64,
+    model: Option<String>,
+    timestamp: String,
 }
 
-/// Aggregated usage for a user
+/// Aggregated usage for a user and model
 #[derive(Debug, Clone, Default)]
 struct AggregatedUsage {
     input_tokens: i64,
     output_tokens: i64,
     requests: i64,
+    timestamp: Option<String>,
 }
 
 impl AggregatedUsage {
@@ -86,6 +90,15 @@ impl AggregatedUsage {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
         self.requests += other.requests;
+        // Track the earliest timestamp in the aggregation
+        match &self.timestamp {
+            None => self.timestamp = Some(other.timestamp.clone()),
+            Some(existing) => {
+                if other.timestamp < *existing {
+                    self.timestamp = Some(other.timestamp.clone());
+                }
+            }
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -142,7 +155,7 @@ impl BatchingUsageTracker {
     ///
     /// This method never blocks and never fails. If the channel is full,
     /// the increment is dropped and logged.
-    pub fn track(&self, email: String, input_tokens: u64, output_tokens: u64) {
+    pub fn track(&self, email: String, input_tokens: u64, output_tokens: u64, model: Option<String>) {
         // Warn if email is empty - this will cause Zion API to reject the request
         if email.is_empty() {
             warn!(
@@ -152,12 +165,16 @@ impl BatchingUsageTracker {
             );
         }
 
+        let timestamp = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
         // Send unified usage increment
         self.send_increment(UsageIncrement {
             email,
             input_tokens: input_tokens as i64,
             output_tokens: output_tokens as i64,
             requests: 1,
+            model,
+            timestamp,
         });
     }
 
@@ -165,12 +182,12 @@ impl BatchingUsageTracker {
     ///
     /// Use this for endpoints that don't have token counts (audio, images, etc.)
     /// Only increments the request count.
-    pub fn track_request_only(&self, email: String) {
+    pub fn track_request_only(&self, email: String, model: Option<String>) {
         // Warn if email is empty - this will cause Zion API to reject the request
         if email.is_empty() {
             warn!("Attempted to track request with empty email - this will fail");
         }
-        self.track(email, 0, 0);
+        self.track(email, 0, 0, model);
     }
 
     /// Send a single increment to the channel (fire-and-forget)
@@ -223,8 +240,8 @@ impl BatchingUsageTracker {
         let mut consecutive_failures: u32 = 0;
         let mut circuit_opened_at: Option<std::time::Instant> = None;
 
-        // Aggregation buffer - keyed by email
-        let mut buffer: HashMap<String, AggregatedUsage> = HashMap::new();
+        // Aggregation buffer - keyed by (email, model)
+        let mut buffer: HashMap<(String, Option<String>), AggregatedUsage> = HashMap::new();
         let mut last_flush = std::time::Instant::now();
         let mut last_retry = std::time::Instant::now();
 
@@ -244,9 +261,9 @@ impl BatchingUsageTracker {
                 maybe_increment = receiver.recv() => {
                     match maybe_increment {
                         Some(increment) => {
-                            // Aggregate increment by email
+                            // Aggregate increment by (email, model)
                             buffer
-                                .entry(increment.email.clone())
+                                .entry((increment.email.clone(), increment.model.clone()))
                                 .or_default()
                                 .add(&increment);
 
@@ -329,7 +346,7 @@ impl BatchingUsageTracker {
             governor::state::InMemoryState,
             governor::clock::DefaultClock,
         >,
-        buffer: &mut HashMap<String, AggregatedUsage>,
+        buffer: &mut HashMap<(String, Option<String>), AggregatedUsage>,
         circuit_state: &mut CircuitState,
         consecutive_failures: &mut u32,
         circuit_opened_at: &mut Option<std::time::Instant>,
@@ -361,7 +378,7 @@ impl BatchingUsageTracker {
         }
 
         // Drain buffer and filter out empty entries
-        let increments: Vec<(String, AggregatedUsage)> = buffer
+        let increments: Vec<((String, Option<String>), AggregatedUsage)> = buffer
             .drain()
             .filter(|(_, usage)| !usage.is_empty())
             .collect();
@@ -383,7 +400,7 @@ impl BatchingUsageTracker {
         // Note: limit_name is not sent - auto-detected from user's subscription plan
         let batch_items: Vec<BatchIncrementItem> = increments
             .iter()
-            .map(|(email, usage)| BatchIncrementItem {
+            .map(|((email, model), usage)| BatchIncrementItem {
                 email: email.clone(),
                 ai_input_tokens: if usage.input_tokens > 0 {
                     Some(usage.input_tokens)
@@ -400,6 +417,8 @@ impl BatchingUsageTracker {
                 } else {
                     None
                 },
+                model: model.clone(),
+                timestamp: usage.timestamp.clone(),
             })
             .collect();
 
@@ -423,15 +442,17 @@ impl BatchingUsageTracker {
                     // Persist failed items to Redis for retry
                     for item_result in result.results.iter().filter(|r| !r.success) {
                         // Find the original usage data
-                        if let Some((email, usage)) = increments
+                        if let Some(((email, model), usage)) = increments
                             .iter()
-                            .find(|(e, _)| *e == item_result.email)
+                            .find(|((e, _), _)| *e == item_result.email)
                         {
                             let increment = UsageIncrement {
                                 email: email.clone(),
                                 input_tokens: usage.input_tokens,
                                 output_tokens: usage.output_tokens,
                                 requests: usage.requests,
+                                model: model.clone(),
+                                timestamp: usage.timestamp.clone().unwrap_or_default(),
                             };
                             if let Err(redis_err) =
                                 Self::persist_failed_increment(redis, &increment).await
@@ -462,12 +483,14 @@ impl BatchingUsageTracker {
                 );
 
                 // Persist all to Redis for retry
-                for (email, usage) in &increments {
+                for ((email, model), usage) in &increments {
                     let increment = UsageIncrement {
                         email: email.clone(),
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
                         requests: usage.requests,
+                        model: model.clone(),
+                        timestamp: usage.timestamp.clone().unwrap_or_default(),
                     };
                     if let Err(redis_err) = Self::persist_failed_increment(redis, &increment).await
                     {
@@ -675,7 +698,7 @@ impl BatchingUsageTracker {
     /// ```ignore
     /// let zion_client = Arc::new(ZionClient::new(...));
     /// let tracker = BatchingUsageTracker::new_for_testing(zion_client);
-    /// tracker.track("user@example.com".to_string(), 100, 50);
+    /// tracker.track("user@example.com".to_string(), 100, 50, Some("gpt-4o".to_string()));
     /// // Usage will be sent to Zion mock after ~10ms
     /// ```
     pub fn new_for_testing(zion_client: Arc<ZionClient>) -> Self {
@@ -713,8 +736,8 @@ impl BatchingUsageTracker {
             NonZeroU32::new(config.rate_limit_per_second).unwrap(),
         ));
 
-        // Aggregation buffer - keyed by email
-        let mut buffer: HashMap<String, AggregatedUsage> = HashMap::new();
+        // Aggregation buffer - keyed by (email, model)
+        let mut buffer: HashMap<(String, Option<String>), AggregatedUsage> = HashMap::new();
         let mut last_flush = std::time::Instant::now();
 
         loop {
@@ -727,7 +750,7 @@ impl BatchingUsageTracker {
                     match maybe_increment {
                         Some(increment) => {
                             buffer
-                                .entry(increment.email.clone())
+                                .entry((increment.email.clone(), increment.model.clone()))
                                 .or_default()
                                 .add(&increment);
 
@@ -765,9 +788,9 @@ impl BatchingUsageTracker {
             governor::state::InMemoryState,
             governor::clock::DefaultClock,
         >,
-        buffer: &mut HashMap<String, AggregatedUsage>,
+        buffer: &mut HashMap<(String, Option<String>), AggregatedUsage>,
     ) {
-        let increments: Vec<(String, AggregatedUsage)> = buffer
+        let increments: Vec<((String, Option<String>), AggregatedUsage)> = buffer
             .drain()
             .filter(|(_, usage)| !usage.is_empty())
             .collect();
@@ -785,7 +808,7 @@ impl BatchingUsageTracker {
 
         let batch_items: Vec<BatchIncrementItem> = increments
             .iter()
-            .map(|(email, usage)| BatchIncrementItem {
+            .map(|((email, model), usage)| BatchIncrementItem {
                 email: email.clone(),
                 ai_input_tokens: if usage.input_tokens > 0 {
                     Some(usage.input_tokens)
@@ -802,6 +825,8 @@ impl BatchingUsageTracker {
                 } else {
                     None
                 },
+                model: model.clone(),
+                timestamp: usage.timestamp.clone(),
             })
             .collect();
 
@@ -868,6 +893,7 @@ mod tests {
         assert_eq!(usage.input_tokens, 0);
         assert_eq!(usage.output_tokens, 0);
         assert_eq!(usage.requests, 0);
+        assert!(usage.timestamp.is_none());
         assert!(usage.is_empty());
     }
 
@@ -879,19 +905,61 @@ mod tests {
             input_tokens: 100,
             output_tokens: 50,
             requests: 1,
+            model: Some("gpt-4o".to_string()),
+            timestamp: "2024-01-15T10:30:00.000Z".to_string(),
         };
 
         usage.add(&increment);
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 50);
         assert_eq!(usage.requests, 1);
+        assert_eq!(usage.timestamp, Some("2024-01-15T10:30:00.000Z".to_string()));
         assert!(!usage.is_empty());
 
-        // Add more
-        usage.add(&increment);
+        // Add more with a later timestamp (should keep earlier)
+        let increment2 = UsageIncrement {
+            email: "user1@example.com".to_string(),
+            input_tokens: 100,
+            output_tokens: 50,
+            requests: 1,
+            model: Some("gpt-4o".to_string()),
+            timestamp: "2024-01-15T10:31:00.000Z".to_string(),
+        };
+        usage.add(&increment2);
         assert_eq!(usage.input_tokens, 200);
         assert_eq!(usage.output_tokens, 100);
         assert_eq!(usage.requests, 2);
+        // Should still be the earlier timestamp
+        assert_eq!(usage.timestamp, Some("2024-01-15T10:30:00.000Z".to_string()));
+    }
+
+    #[test]
+    fn test_aggregated_usage_add_keeps_earliest_timestamp() {
+        let mut usage = AggregatedUsage::default();
+
+        // Add with later timestamp first
+        let increment1 = UsageIncrement {
+            email: "user1@example.com".to_string(),
+            input_tokens: 100,
+            output_tokens: 50,
+            requests: 1,
+            model: None,
+            timestamp: "2024-01-15T10:31:00.000Z".to_string(),
+        };
+        usage.add(&increment1);
+        assert_eq!(usage.timestamp, Some("2024-01-15T10:31:00.000Z".to_string()));
+
+        // Add with earlier timestamp (should replace)
+        let increment2 = UsageIncrement {
+            email: "user1@example.com".to_string(),
+            input_tokens: 100,
+            output_tokens: 50,
+            requests: 1,
+            model: None,
+            timestamp: "2024-01-15T10:30:00.000Z".to_string(),
+        };
+        usage.add(&increment2);
+        assert_eq!(usage.timestamp, Some("2024-01-15T10:30:00.000Z".to_string()));
     }
 
     #[test]
@@ -903,6 +971,7 @@ mod tests {
             input_tokens: 1,
             output_tokens: 0,
             requests: 0,
+            timestamp: None,
         };
         assert!(!with_input.is_empty());
 
@@ -910,6 +979,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 1,
             requests: 0,
+            timestamp: None,
         };
         assert!(!with_output.is_empty());
 
@@ -917,6 +987,7 @@ mod tests {
             input_tokens: 0,
             output_tokens: 0,
             requests: 1,
+            timestamp: None,
         };
         assert!(!with_request.is_empty());
     }
@@ -928,6 +999,8 @@ mod tests {
             input_tokens: 100,
             output_tokens: 50,
             requests: 1,
+            model: Some("gpt-4o".to_string()),
+            timestamp: "2024-01-15T10:30:00.000Z".to_string(),
         };
 
         let json = serde_json::to_string(&increment).unwrap();
@@ -937,6 +1010,26 @@ mod tests {
         assert_eq!(deserialized.input_tokens, 100);
         assert_eq!(deserialized.output_tokens, 50);
         assert_eq!(deserialized.requests, 1);
+        assert_eq!(deserialized.model, Some("gpt-4o".to_string()));
+        assert_eq!(deserialized.timestamp, "2024-01-15T10:30:00.000Z");
+    }
+
+    #[test]
+    fn test_usage_increment_serialization_without_model() {
+        let increment = UsageIncrement {
+            email: "user123@example.com".to_string(),
+            input_tokens: 100,
+            output_tokens: 50,
+            requests: 1,
+            model: None,
+            timestamp: "2024-01-15T10:30:00.000Z".to_string(),
+        };
+
+        let json = serde_json::to_string(&increment).unwrap();
+        let deserialized: UsageIncrement = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.model, None);
+        assert_eq!(deserialized.timestamp, "2024-01-15T10:30:00.000Z");
     }
 
     #[test]
@@ -955,49 +1048,110 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregation_by_email() {
+    fn test_aggregation_by_email_and_model() {
         use std::collections::HashMap;
 
-        let mut buffer: HashMap<String, AggregatedUsage> = HashMap::new();
+        let mut buffer: HashMap<(String, Option<String>), AggregatedUsage> = HashMap::new();
 
-        // First increment for user1
+        // First increment for user1 with gpt-4o
         let inc1 = UsageIncrement {
             email: "user1@example.com".to_string(),
             input_tokens: 100,
             output_tokens: 50,
             requests: 1,
+            model: Some("gpt-4o".to_string()),
+            timestamp: "2024-01-15T10:30:00.000Z".to_string(),
         };
-        buffer.entry(inc1.email.clone()).or_default().add(&inc1);
+        buffer.entry((inc1.email.clone(), inc1.model.clone())).or_default().add(&inc1);
 
-        // Second increment for user1 (should aggregate)
+        // Second increment for user1 with same model (should aggregate)
         let inc2 = UsageIncrement {
             email: "user1@example.com".to_string(),
             input_tokens: 200,
             output_tokens: 100,
             requests: 1,
+            model: Some("gpt-4o".to_string()),
+            timestamp: "2024-01-15T10:31:00.000Z".to_string(),
         };
-        buffer.entry(inc2.email.clone()).or_default().add(&inc2);
+        buffer.entry((inc2.email.clone(), inc2.model.clone())).or_default().add(&inc2);
+
+        // Increment for user1 with different model (should NOT aggregate with above)
+        let inc3 = UsageIncrement {
+            email: "user1@example.com".to_string(),
+            input_tokens: 50,
+            output_tokens: 25,
+            requests: 1,
+            model: Some("gpt-3.5-turbo".to_string()),
+            timestamp: "2024-01-15T10:32:00.000Z".to_string(),
+        };
+        buffer.entry((inc3.email.clone(), inc3.model.clone())).or_default().add(&inc3);
 
         // Increment for user2
-        let inc3 = UsageIncrement {
+        let inc4 = UsageIncrement {
             email: "user2@example.com".to_string(),
             input_tokens: 50,
             output_tokens: 25,
             requests: 1,
+            model: Some("gpt-4o".to_string()),
+            timestamp: "2024-01-15T10:33:00.000Z".to_string(),
         };
-        buffer.entry(inc3.email.clone()).or_default().add(&inc3);
+        buffer.entry((inc4.email.clone(), inc4.model.clone())).or_default().add(&inc4);
 
-        // Verify aggregation
-        assert_eq!(buffer.len(), 2);
+        // Verify aggregation - should be 3 entries (user1+gpt4o, user1+gpt3.5, user2+gpt4o)
+        assert_eq!(buffer.len(), 3);
 
-        let user1_usage = buffer.get("user1@example.com").unwrap();
-        assert_eq!(user1_usage.input_tokens, 300);
-        assert_eq!(user1_usage.output_tokens, 150);
-        assert_eq!(user1_usage.requests, 2);
+        let user1_gpt4o = buffer.get(&("user1@example.com".to_string(), Some("gpt-4o".to_string()))).unwrap();
+        assert_eq!(user1_gpt4o.input_tokens, 300);
+        assert_eq!(user1_gpt4o.output_tokens, 150);
+        assert_eq!(user1_gpt4o.requests, 2);
+        // Should have earliest timestamp
+        assert_eq!(user1_gpt4o.timestamp, Some("2024-01-15T10:30:00.000Z".to_string()));
 
-        let user2_usage = buffer.get("user2@example.com").unwrap();
+        let user1_gpt35 = buffer.get(&("user1@example.com".to_string(), Some("gpt-3.5-turbo".to_string()))).unwrap();
+        assert_eq!(user1_gpt35.input_tokens, 50);
+        assert_eq!(user1_gpt35.output_tokens, 25);
+        assert_eq!(user1_gpt35.requests, 1);
+
+        let user2_usage = buffer.get(&("user2@example.com".to_string(), Some("gpt-4o".to_string()))).unwrap();
         assert_eq!(user2_usage.input_tokens, 50);
         assert_eq!(user2_usage.output_tokens, 25);
         assert_eq!(user2_usage.requests, 1);
+    }
+
+    #[test]
+    fn test_aggregation_with_no_model() {
+        use std::collections::HashMap;
+
+        let mut buffer: HashMap<(String, Option<String>), AggregatedUsage> = HashMap::new();
+
+        // Increment without model
+        let inc1 = UsageIncrement {
+            email: "user1@example.com".to_string(),
+            input_tokens: 100,
+            output_tokens: 50,
+            requests: 1,
+            model: None,
+            timestamp: "2024-01-15T10:30:00.000Z".to_string(),
+        };
+        buffer.entry((inc1.email.clone(), inc1.model.clone())).or_default().add(&inc1);
+
+        // Another increment without model (should aggregate)
+        let inc2 = UsageIncrement {
+            email: "user1@example.com".to_string(),
+            input_tokens: 100,
+            output_tokens: 50,
+            requests: 1,
+            model: None,
+            timestamp: "2024-01-15T10:31:00.000Z".to_string(),
+        };
+        buffer.entry((inc2.email.clone(), inc2.model.clone())).or_default().add(&inc2);
+
+        // Verify aggregation
+        assert_eq!(buffer.len(), 1);
+
+        let user1_no_model = buffer.get(&("user1@example.com".to_string(), None)).unwrap();
+        assert_eq!(user1_no_model.input_tokens, 200);
+        assert_eq!(user1_no_model.output_tokens, 100);
+        assert_eq!(user1_no_model.requests, 2);
     }
 }

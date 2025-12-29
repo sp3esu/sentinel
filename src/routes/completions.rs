@@ -226,7 +226,7 @@ async fn handle_non_streaming_completion(
     record_tokens("completion", output_tokens, &model);
 
     // Track usage in Zion (fire-and-forget, never blocks)
-    state.batching_tracker.track(user.email.clone(), input_tokens, output_tokens);
+    state.batching_tracker.track(user.email.clone(), input_tokens, output_tokens, Some(model.clone()));
 
     info!(
         model = %model,
@@ -378,7 +378,7 @@ async fn handle_streaming_completion(
         record_tokens("completion", output_tokens, &model_for_metrics);
 
         // ALWAYS track usage in Zion (fire-and-forget)
-        tracker_final.track(user_email_final.clone(), input_tokens, output_tokens);
+        tracker_final.track(user_email_final.clone(), input_tokens, output_tokens, Some(model_for_metrics.clone()));
 
         info!(
             model = %model_for_metrics,

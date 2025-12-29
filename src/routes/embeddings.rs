@@ -136,6 +136,7 @@ pub async fn embeddings(
         user.email.clone(),
         response.usage.prompt_tokens as u64,
         0, // No output tokens for embeddings
+        Some(model.clone()),
     );
 
     info!(

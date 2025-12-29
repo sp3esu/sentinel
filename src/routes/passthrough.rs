@@ -73,9 +73,10 @@ pub async fn passthrough_handler(
     record_request(status_label, &path, duration);
 
     // Track request count only (no token tracking for pass-through endpoints)
+    // No model available for pass-through requests
     state
         .batching_tracker
-        .track_request_only(user.email.clone());
+        .track_request_only(user.email.clone(), None);
 
     info!(
         method = %method,
