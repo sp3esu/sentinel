@@ -1,0 +1,59 @@
+# sentinel.service
+# Systemd service for Sentinel AI Proxy using Docker Compose
+#
+# Installation:
+#   sudo cp sentinel.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable sentinel
+#   sudo systemctl start sentinel
+#
+# Commands:
+#   sudo systemctl status sentinel
+#   sudo systemctl restart sentinel
+#   sudo journalctl -u sentinel -f
+
+[Unit]
+Description=Sentinel AI Proxy
+Documentation=https://github.com/yourusername/sentinel
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/sentinel
+
+# Environment file for Docker Compose
+EnvironmentFile=-/opt/sentinel/.env
+
+# Start containers
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+
+# Stop containers gracefully
+ExecStop=/usr/bin/docker compose down
+
+# Reload (restart containers)
+ExecReload=/usr/bin/docker compose restart
+
+# Health check command
+ExecStartPost=/bin/bash -c 'sleep 5 && curl -sf http://localhost:8080/health/ready || exit 1'
+
+# Timeouts
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+# Restart policy (for the docker-compose command itself, not containers)
+# Container restart is handled by docker-compose.yml restart: unless-stopped
+Restart=on-failure
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sentinel
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

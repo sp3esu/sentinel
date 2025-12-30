@@ -313,12 +313,240 @@ Create a rule to bypass caching for API:
    - **When:** URI Path contains `/v1/`
    - **Then:** Bypass cache
 
-### 5.6 Security Settings
+### 5.6 Basic Security Settings
 
 - **Security Level:** Medium
 - **Challenge Passage:** 30 minutes
 - **Browser Integrity Check:** On
 - **Bot Fight Mode:** On (but may need to allowlist API clients)
+
+---
+
+## 5.5 Advanced Security: WAF & Firewall Hardening
+
+This section covers comprehensive security for protecting Sentinel from unauthorized access, DDoS attacks, and hiding the server IP.
+
+### Security Architecture
+
+```
+Desktop App (with custom User-Agent)
+        │
+        ▼ (HTTPS to api.yourdomain.com)
+┌───────────────────────────────────────────┐
+│   Cloudflare Edge                         │
+│   ├─ DDoS Protection (Layer 3/4/7)        │
+│   ├─ WAF (OWASP + Custom Rules)           │
+│   ├─ Bot Fight Mode                       │
+│   └─ Rate Limiting (per IP)               │
+└───────────────────────────────────────────┘
+        │
+        ▼ (Only Cloudflare IPs allowed)
+┌───────────────────────────────────────────┐
+│   VPS Firewall (iptables/UFW)             │
+│   └─ deployment/cloudflare-firewall.sh    │
+└───────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────┐
+│   Nginx/Caddy (TLS termination)           │
+│   └─ deployment/nginx-sentinel.conf       │
+└───────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────┐
+│   Sentinel (Application)                  │
+│   ├─ JWT validation via Zion              │
+│   └─ Per-user rate limiting (Redis)       │
+└───────────────────────────────────────────┘
+```
+
+### 5.5.1 WAF Managed Rules
+
+Navigate to: **Security → WAF → Managed Rules**
+
+Enable these rulesets:
+- **Cloudflare Managed Ruleset** - General protection
+- **Cloudflare OWASP Core Ruleset** - OWASP Top 10 protection
+
+### 5.5.2 WAF Custom Rules
+
+Navigate to: **Security → WAF → Custom Rules**
+
+**Rule 1: Require Your Desktop App User-Agent**
+
+Only allow requests from your desktop application:
+
+```
+Expression:
+(http.request.uri.path contains "/v1/") and
+(not http.user_agent contains "YourDesktopApp/")
+
+Action: Block
+```
+
+Replace `YourDesktopApp/` with your actual User-Agent string.
+
+**Rule 2: Require Authorization Header on API Routes**
+
+Block requests without JWT token:
+
+```
+Expression:
+(http.request.uri.path contains "/v1/") and
+(not any(http.request.headers["authorization"][*] contains "Bearer"))
+
+Action: Block
+```
+
+**Rule 3: Block Common Attack Patterns**
+
+```
+Expression:
+(http.request.uri.path contains "..") or
+(http.request.uri.path contains ".env") or
+(http.request.uri.path contains ".git") or
+(http.request.uri.query contains "eval(") or
+(http.request.uri.query contains "base64")
+
+Action: Block
+```
+
+**Rule 4: Geographic Restrictions (Optional)**
+
+If your users are in specific countries:
+
+```
+Expression:
+(not ip.geoip.country in {"US" "CA" "GB" "DE" "FR"})
+
+Action: Challenge
+```
+
+### 5.5.3 Rate Limiting Rules
+
+Navigate to: **Security → WAF → Rate Limiting Rules**
+
+**Rule 1: General API Rate Limit**
+
+```
+Expression: (http.request.uri.path contains "/v1/")
+Characteristics: IP
+Period: 1 minute
+Requests: 100
+Action: Block for 1 minute
+```
+
+**Rule 2: Aggressive Rate Limit**
+
+```
+Expression: (http.request.uri.path contains "/v1/")
+Characteristics: IP
+Period: 10 seconds
+Requests: 20
+Action: Challenge
+```
+
+**Rule 3: Auth Endpoint Protection**
+
+```
+Expression: (http.request.uri.path eq "/v1/chat/completions")
+Characteristics: IP + Headers (Authorization)
+Period: 1 minute
+Requests: 60
+Action: Block for 5 minutes
+```
+
+### 5.5.4 Bot Fight Mode
+
+Navigate to: **Security → Bots**
+
+- Enable **Bot Fight Mode** (Free)
+- On Pro plan, enable **Super Bot Fight Mode**
+- Configure to challenge or block definitely automated traffic
+
+**Important:** Your desktop app may be flagged. Solutions:
+1. Set a consistent, unique User-Agent
+2. If issues persist, add WAF exception for your User-Agent
+3. Consider using Cloudflare Access for machine-to-machine auth
+
+### 5.5.5 VPS Firewall: Only Allow Cloudflare IPs
+
+This is critical - it ensures your server IP cannot be accessed directly, even if discovered.
+
+**Using the provided script:**
+
+```bash
+# Copy script to server
+scp deployment/cloudflare-firewall.sh deploy@your-vps:/opt/sentinel/deployment/
+
+# On VPS
+sudo chmod +x /opt/sentinel/deployment/cloudflare-firewall.sh
+sudo /opt/sentinel/deployment/cloudflare-firewall.sh
+
+# Add to cron for weekly updates (Cloudflare IPs change occasionally)
+echo "0 4 * * 0 root /opt/sentinel/deployment/cloudflare-firewall.sh >> /var/log/cf-fw.log 2>&1" | sudo tee -a /etc/crontab
+```
+
+**Alternative: Manual UFW setup**
+
+```bash
+# Deny all HTTP/HTTPS by default
+sudo ufw deny 80/tcp
+sudo ufw deny 443/tcp
+
+# Allow only Cloudflare IP ranges (abbreviated, see script for full list)
+sudo ufw allow from 173.245.48.0/20 to any port 80,443 proto tcp
+sudo ufw allow from 103.21.244.0/22 to any port 80,443 proto tcp
+# ... add all Cloudflare ranges
+```
+
+### 5.5.6 Hide Origin IP
+
+Ensure your real server IP is never exposed:
+
+1. **Never use the IP directly** - Always use the Cloudflare-proxied domain
+2. **Check for leaks:**
+   ```bash
+   # These should NOT return your VPS IP
+   dig +short api.yourdomain.com  # Should return Cloudflare IPs
+   nslookup api.yourdomain.com
+   ```
+3. **Historical DNS:** Check sites like SecurityTrails for historical DNS records
+4. **Email headers:** Don't send email from the VPS
+5. **SSL certificates:** Don't use Let's Encrypt directly (use Cloudflare origin certs)
+
+### 5.5.7 Desktop App Configuration
+
+Update your desktop app to work with this security setup:
+
+```typescript
+// Example: Setting custom User-Agent
+const headers = {
+  'User-Agent': 'YourDesktopApp/1.0.0',
+  'Authorization': `Bearer ${userJwtToken}`,
+  'Content-Type': 'application/json'
+};
+
+// API calls
+const response = await fetch('https://api.yourdomain.com/v1/chat/completions', {
+  method: 'POST',
+  headers,
+  body: JSON.stringify(requestBody)
+});
+```
+
+**Optional: Certificate Pinning**
+
+For additional security, pin Cloudflare's edge certificate in your app to prevent MITM attacks.
+
+### 5.5.8 Monitoring Blocked Requests
+
+Navigate to: **Security → Events**
+
+Review blocked requests to:
+- Identify false positives (legitimate users blocked)
+- Tune WAF rules if needed
+- Monitor attack patterns
 
 ---
 
@@ -474,28 +702,44 @@ sudo systemctl enable sentinel
 - [ ] Services healthy: `docker compose ps`
 
 ### Reverse Proxy
-- [ ] Caddy installed
+- [ ] Caddy or Nginx installed
 - [ ] Cloudflare origin certificate installed
-- [ ] Caddyfile configured
-- [ ] Caddy service running
+- [ ] Reverse proxy configured (use `deployment/nginx-sentinel.conf` as reference)
+- [ ] Reverse proxy service running
 
 ### Cloudflare
-- [ ] DNS A record pointing to VPS
+- [ ] DNS A record pointing to VPS (orange cloud enabled)
 - [ ] SSL mode: Full (Strict)
 - [ ] WebSockets enabled
 - [ ] Cache bypass rule for /v1/
 - [ ] (Optional) Keep-alive implemented for SSE
 
+### Cloudflare Security (see Section 5.5)
+- [ ] WAF Managed Rules enabled (Cloudflare + OWASP)
+- [ ] WAF Custom Rule: Require desktop app User-Agent
+- [ ] WAF Custom Rule: Require Authorization header
+- [ ] WAF Custom Rule: Block attack patterns
+- [ ] Rate limiting rules configured
+- [ ] Bot Fight Mode enabled
+
+### VPS Security Hardening
+- [ ] Cloudflare-only firewall configured (`deployment/cloudflare-firewall.sh`)
+- [ ] Cron job for Cloudflare IP updates
+- [ ] Origin IP verified hidden (dig/nslookup returns Cloudflare IPs)
+- [ ] SSH restricted to admin IPs only
+
 ### Monitoring
 - [ ] Prometheus scraping /metrics
 - [ ] Grafana dashboards configured
 - [ ] Node exporter for system metrics
+- [ ] Cloudflare Security Events monitored
 
 ### Verification
 - [ ] Health check passing: `curl https://api.yourdomain.com/health`
 - [ ] API working: test chat completion
 - [ ] Streaming working: test SSE response
 - [ ] Metrics visible in Grafana
+- [ ] Direct IP access blocked (test: `curl http://YOUR_VPS_IP` - should timeout)
 
 ---
 
@@ -549,6 +793,61 @@ Consider using `cargo-chef` for faster builds if you're doing frequent deploymen
 
 ---
 
+## 11. Deployment Directory Files
+
+The `deployment/` directory contains ready-to-use configuration files:
+
+### deployment/cloudflare-firewall.sh
+
+Firewall script that configures iptables to only allow HTTP/HTTPS traffic from Cloudflare IPs. This ensures your server cannot be accessed directly even if the IP is discovered.
+
+```bash
+# Install and run
+sudo cp deployment/cloudflare-firewall.sh /usr/local/bin/
+sudo chmod +x /usr/local/bin/cloudflare-firewall.sh
+sudo /usr/local/bin/cloudflare-firewall.sh
+
+# Options
+sudo /usr/local/bin/cloudflare-firewall.sh --ufw  # Use UFW instead of iptables
+```
+
+### deployment/nginx-sentinel.conf
+
+Complete Nginx configuration for reverse proxying to Sentinel with:
+- Cloudflare origin certificate SSL
+- Rate limiting (backup layer)
+- Security headers
+- Optimized timeouts for AI streaming
+- Cloudflare real IP restoration
+
+```bash
+# Install
+sudo cp deployment/nginx-sentinel.conf /etc/nginx/sites-available/sentinel
+sudo ln -s /etc/nginx/sites-available/sentinel /etc/nginx/sites-enabled/
+# Edit to set your domain name
+sudo nano /etc/nginx/sites-available/sentinel
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### deployment/sentinel.service
+
+Systemd service file for managing Sentinel via Docker Compose:
+
+```bash
+# Install
+sudo cp deployment/sentinel.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable sentinel
+sudo systemctl start sentinel
+
+# Manage
+sudo systemctl status sentinel
+sudo systemctl restart sentinel
+sudo journalctl -u sentinel -f
+```
+
+---
+
 ## Sources
 
 - [cargo-chef for Docker builds](https://github.com/LukeMathWalker/cargo-chef)
@@ -557,3 +856,5 @@ Consider using `cargo-chef` for faster builds if you're doing frequent deploymen
 - [SSE timeout mitigation](https://smartscope.blog/en/Infrastructure/sse-timeout-mitigation-cloudflare-alb/)
 - [Docker restart policies](https://docs.docker.com/engine/containers/start-containers-automatically/)
 - [dockprom monitoring stack](https://github.com/stefanprodan/dockprom)
+- [Cloudflare IP Ranges](https://www.cloudflare.com/ips/)
+- [Cloudflare WAF Custom Rules](https://developers.cloudflare.com/waf/custom-rules/)
