@@ -247,17 +247,39 @@ async fn handle_non_streaming_responses(
     Ok((StatusCode::OK, Json(response)).into_response())
 }
 
-/// Streaming chunk for parsing content and usage
-#[derive(Debug, Clone, Deserialize)]
-struct StreamChunk {
-    #[serde(default)]
-    output: Vec<serde_json::Value>,
+/// Response object inside response.completed events
+#[derive(Debug, Clone, Deserialize, Default)]
+struct ResponseObject {
     #[serde(default)]
     usage: Option<Usage>,
+    // Note: output field exists in the API but we don't need it for token counting
+}
+
+/// Streaming chunk for parsing content and usage
+/// Handles both Chat Completions-style and Responses API-style events
+#[derive(Debug, Clone, Deserialize)]
+struct StreamChunk {
+    /// Event type (e.g., "response.output_text.delta", "response.completed")
+    /// Used in tests to verify correct parsing; available for production debugging if needed
     #[serde(default, rename = "type")]
-    chunk_type: Option<String>,
+    #[allow(dead_code)]
+    event_type: Option<String>,
+
+    /// Delta content - can be a string (response.output_text.delta) or object
     #[serde(default)]
     delta: Option<serde_json::Value>,
+
+    /// Response object inside response.completed events - contains usage
+    #[serde(default)]
+    response: Option<ResponseObject>,
+
+    /// Direct usage field (legacy/fallback)
+    #[serde(default)]
+    usage: Option<Usage>,
+
+    /// Output array (for non-streaming or different event types)
+    #[serde(default)]
+    output: Vec<serde_json::Value>,
 }
 
 /// Handle streaming responses
@@ -320,21 +342,40 @@ async fn handle_streaming_responses(
                         if json_str != "[DONE]" {
                             match serde_json::from_str::<StreamChunk>(json_str) {
                                 Ok(chunk) => {
-                                    // Accumulate content from output or delta
+                                    // Accumulate content from output array (non-streaming or some event types)
                                     if !chunk.output.is_empty() {
                                         let output_text = extract_output_text(&chunk.output);
                                         content_for_stream.lock().unwrap().push_str(&output_text);
                                     }
+
+                                    // Accumulate content from delta field
                                     if let Some(ref delta) = chunk.delta {
-                                        // Try to extract text from delta
-                                        if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                        // For response.output_text.delta events, delta is a string
+                                        if let Some(text) = delta.as_str() {
                                             content_for_stream.lock().unwrap().push_str(text);
                                         }
-                                        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                                            content_for_stream.lock().unwrap().push_str(content);
+                                        // For other event types, delta may be an object with text/content fields
+                                        if let Some(obj) = delta.as_object() {
+                                            if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
+                                                content_for_stream.lock().unwrap().push_str(text);
+                                            }
+                                            if let Some(content) = obj.get("content").and_then(|c| c.as_str()) {
+                                                content_for_stream.lock().unwrap().push_str(content);
+                                            }
                                         }
                                     }
-                                    // Capture usage if provided
+
+                                    // Extract usage from response.completed event (nested in response object)
+                                    if let Some(ref response) = chunk.response {
+                                        if let Some(ref usage) = response.usage {
+                                            let mut acc = usage_for_stream.lock().unwrap();
+                                            acc.input_tokens = usage.input_tokens;
+                                            acc.output_tokens = usage.output_tokens;
+                                            acc.total_tokens = usage.total_tokens;
+                                        }
+                                    }
+
+                                    // Fallback: direct usage field (legacy/other formats)
                                     if let Some(usage) = chunk.usage {
                                         let mut acc = usage_for_stream.lock().unwrap();
                                         acc.input_tokens = usage.input_tokens;
@@ -545,5 +586,155 @@ mod tests {
         assert_eq!(tuples[1].1, ""); // null content becomes empty string
         assert_eq!(tuples[2].0, "assistant");
         assert!(tuples[2].1.contains("Paris"));
+    }
+
+    // ==========================================
+    // Streaming Token Counting Tests
+    // ==========================================
+
+    #[test]
+    fn test_streaming_token_count_matches_completion_usage() {
+        // Simulate a streaming session with multiple delta events and final completion
+        let sse_events = vec![
+            // Delta events with content (response.output_text.delta has delta as string)
+            r#"{"type":"response.output_text.delta","delta":"Hello "}"#,
+            r#"{"type":"response.output_text.delta","delta":"world"}"#,
+            // Final completion with usage (this is the authoritative source)
+            r#"{"type":"response.completed","response":{"usage":{"input_tokens":15,"output_tokens":25,"total_tokens":40}}}"#,
+        ];
+
+        let mut content_accumulator = String::new();
+        let mut final_usage = Usage::default();
+
+        for json_str in sse_events {
+            let chunk: StreamChunk = serde_json::from_str(json_str).unwrap();
+
+            // Accumulate content from deltas (same logic as streaming handler)
+            if let Some(ref delta) = chunk.delta {
+                // For response.output_text.delta events, delta is a string
+                if let Some(text) = delta.as_str() {
+                    content_accumulator.push_str(text);
+                }
+                // For other event types, delta may be an object
+                if let Some(obj) = delta.as_object() {
+                    if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
+                        content_accumulator.push_str(text);
+                    }
+                }
+            }
+
+            // Extract final usage from response.completed
+            if let Some(ref response) = chunk.response {
+                if let Some(ref usage) = response.usage {
+                    final_usage = usage.clone();
+                }
+            }
+        }
+
+        // Verify content was accumulated
+        assert_eq!(content_accumulator, "Hello world");
+
+        // Verify final usage was extracted from response.completed
+        assert_eq!(final_usage.input_tokens, 15);
+        assert_eq!(final_usage.output_tokens, 25);
+        assert_eq!(final_usage.total_tokens, 40);
+
+        // The key invariant: we use the authoritative usage from response.completed,
+        // not a token count estimation from accumulated content
+    }
+
+    #[test]
+    fn test_fallback_estimation_when_no_usage() {
+        // Simulate streaming without usage in final event (edge case)
+        let sse_events = vec![
+            r#"{"type":"response.output_text.delta","delta":"Hello world"}"#,
+            r#"{"type":"response.completed","response":{}}"#, // No usage field
+        ];
+
+        let mut content_accumulator = String::new();
+        let mut final_usage = Usage::default();
+
+        for json_str in sse_events {
+            let chunk: StreamChunk = serde_json::from_str(json_str).unwrap();
+
+            if let Some(ref delta) = chunk.delta {
+                if let Some(text) = delta.as_str() {
+                    content_accumulator.push_str(text);
+                }
+            }
+
+            if let Some(ref response) = chunk.response {
+                if let Some(ref usage) = response.usage {
+                    final_usage = usage.clone();
+                }
+            }
+        }
+
+        // Content should still be accumulated for fallback estimation
+        assert_eq!(content_accumulator, "Hello world");
+
+        // Usage remains default (0) - triggers fallback path in production code
+        assert_eq!(final_usage.input_tokens, 0);
+        assert_eq!(final_usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn test_object_style_delta_backwards_compat() {
+        // Some event types may use object-style delta (e.g., response.content_part.delta)
+        let json_str = r#"{"type":"response.content_part.delta","delta":{"text":"Hello"}}"#;
+        let chunk: StreamChunk = serde_json::from_str(json_str).unwrap();
+
+        let mut content = String::new();
+        if let Some(ref delta) = chunk.delta {
+            // First try string
+            if let Some(text) = delta.as_str() {
+                content.push_str(text);
+            }
+            // Then try object
+            if let Some(obj) = delta.as_object() {
+                if let Some(text) = obj.get("text").and_then(|t| t.as_str()) {
+                    content.push_str(text);
+                }
+            }
+        }
+
+        assert_eq!(content, "Hello");
+    }
+
+    #[test]
+    fn test_response_object_usage_extraction() {
+        // Test the ResponseObject struct correctly deserializes usage
+        let json_str = r#"{"type":"response.completed","response":{"id":"resp_123","usage":{"input_tokens":100,"output_tokens":200,"total_tokens":300},"output":[]}}"#;
+        let chunk: StreamChunk = serde_json::from_str(json_str).unwrap();
+
+        assert!(chunk.response.is_some());
+        let response = chunk.response.unwrap();
+        assert!(response.usage.is_some());
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 200);
+        assert_eq!(usage.total_tokens, 300);
+    }
+
+    #[test]
+    fn test_legacy_direct_usage_field() {
+        // Test that direct usage field (legacy format) still works
+        let json_str = r#"{"usage":{"input_tokens":50,"output_tokens":75,"total_tokens":125}}"#;
+        let chunk: StreamChunk = serde_json::from_str(json_str).unwrap();
+
+        assert!(chunk.usage.is_some());
+        let usage = chunk.usage.unwrap();
+        assert_eq!(usage.input_tokens, 50);
+        assert_eq!(usage.output_tokens, 75);
+        assert_eq!(usage.total_tokens, 125);
+    }
+
+    #[test]
+    fn test_stream_chunk_event_type_parsing() {
+        // Test that event type is correctly extracted
+        let json_str = r#"{"type":"response.output_text.delta","delta":"test"}"#;
+        let chunk: StreamChunk = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(chunk.event_type, Some("response.output_text.delta".to_string()));
     }
 }
