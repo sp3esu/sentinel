@@ -78,6 +78,50 @@ impl RedisCache {
         let _: () = conn.expire(key, seconds as i64).await?;
         Ok(())
     }
+
+    /// Get TTL remaining on a key (returns -2 if key doesn't exist, -1 if no TTL)
+    pub async fn ttl(&self, key: &str) -> AppResult<i64> {
+        let mut conn = self.conn.clone();
+        let ttl: i64 = conn.ttl(key).await?;
+        Ok(ttl)
+    }
+
+    /// Scan for keys matching a pattern (limited to first 100 matches for safety)
+    pub async fn scan_keys(&self, pattern: &str) -> AppResult<Vec<String>> {
+        let mut conn = self.conn.clone();
+        let mut keys = Vec::new();
+        let mut cursor = 0u64;
+
+        loop {
+            let (next_cursor, batch): (u64, Vec<String>) =
+                redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg(pattern)
+                    .arg("COUNT")
+                    .arg(100)
+                    .query_async(&mut conn)
+                    .await?;
+
+            keys.extend(batch);
+            cursor = next_cursor;
+
+            // Limit to 100 keys for safety
+            if keys.len() >= 100 || cursor == 0 {
+                break;
+            }
+        }
+
+        keys.truncate(100);
+        Ok(keys)
+    }
+
+    /// Check if Redis is connected and responsive
+    pub async fn ping(&self) -> AppResult<bool> {
+        let mut conn = self.conn.clone();
+        let result: String = redis::cmd("PING").query_async(&mut conn).await?;
+        Ok(result == "PONG")
+    }
 }
 
 /// Cache key prefixes

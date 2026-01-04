@@ -350,6 +350,7 @@ impl TokenTrackingTestHarness {
             openai_api_key: Some(constants::TEST_OPENAI_API_KEY.to_string()),
             cache_ttl_seconds: 60,
             jwt_cache_ttl_seconds: 60,
+            debug_enabled: false,
         };
 
         // Create HTTP client

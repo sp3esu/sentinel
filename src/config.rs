@@ -30,6 +30,9 @@ pub struct Config {
     pub cache_ttl_seconds: u64,
     /// Cache TTL for JWT validation (in seconds)
     pub jwt_cache_ttl_seconds: u64,
+
+    /// Enable debug endpoints (development only)
+    pub debug_enabled: bool,
 }
 
 impl Config {
@@ -62,6 +65,10 @@ impl Config {
                 .unwrap_or_else(|_| "300".to_string())
                 .parse()
                 .context("Invalid JWT_CACHE_TTL_SECONDS")?,
+
+            debug_enabled: env::var("SENTINEL_DEBUG")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false),
         })
     }
 }

@@ -10,6 +10,7 @@
 
 pub mod chat;
 pub mod completions;
+pub mod debug;
 pub mod embeddings;
 pub mod health;
 pub mod metrics;
@@ -84,8 +85,15 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/health/live", get(health::liveness_check))
         .route("/metrics", get(metrics::prometheus_metrics));
 
+    // Debug routes (only available when SENTINEL_DEBUG=true)
+    let debug_routes = Router::new()
+        .route("/debug/cache", get(debug::cache_overview))
+        .route("/debug/auth/:external_id", get(debug::user_auth_state))
+        .route("/debug/config", get(debug::config_info));
+
     Router::new()
         .merge(public_routes)
+        .merge(debug_routes)
         // Nest protected routes under /v1 - this makes fallback work correctly
         .nest("/v1", protected_routes)
         // Fallback for non-/v1 routes

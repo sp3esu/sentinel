@@ -84,3 +84,8 @@ strip = true
 [[bin]]
 name = "sentinel"
 path = "src/main.rs"
+
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+required-features = ["test-utils"]

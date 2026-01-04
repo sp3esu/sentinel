@@ -5,6 +5,7 @@
 //! interactions.
 
 pub mod chat_completions;
+pub mod debug;
 pub mod health;
 pub mod models;
 pub mod rate_limiting;
