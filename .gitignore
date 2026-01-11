@@ -17,8 +17,10 @@ Cargo.lock
 .env
 .env.docker
 .env.local
+.env.prod
 .env.*.local
 !.env.example
+!.env.prod.example
 
 # OS files
 .DS_Store

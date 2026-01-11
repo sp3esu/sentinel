@@ -13,6 +13,132 @@ The Sentinel project already has solid deployment foundations:
 
 ---
 
+## Quick Start: Automated Deployment
+
+For a fully automated deployment, use the `scripts/deploy-initial.sh` script. This handles everything from package installation to running services.
+
+### Prerequisites
+
+1. **Fresh Ubuntu VPS** (22.04 or 24.04)
+2. **SSH access** to VPS as root
+3. **GitHub deploy key** for private repository access
+4. **Cloudflare Origin Certificate** (from Terraform or Dashboard)
+5. **Production secrets** in `.env.prod` file
+
+### Step 1: Generate GitHub Deploy Key
+
+```bash
+# On your local machine
+ssh-keygen -t ed25519 -C "sentinel-deploy" -f github_deploy_key -N ""
+
+# Add the PUBLIC key to GitHub repository
+# Settings → Deploy keys → Add deploy key → Paste contents of:
+cat github_deploy_key.pub
+```
+
+### Step 2: Export Terraform Outputs (if using Terraform)
+
+```bash
+cd deployment/terraform
+terraform init
+terraform apply
+
+# Export SSL certificates
+terraform output -raw origin_certificate > origin.pem
+terraform output -raw origin_private_key > origin.key
+```
+
+Or create certificates manually in Cloudflare Dashboard → SSL/TLS → Origin Server.
+
+### Step 3: Prepare .env.prod
+
+```bash
+cp .env.prod.example .env.prod
+# Edit with your actual secrets:
+# - ZION_API_URL
+# - ZION_API_KEY
+# - OPENAI_API_KEY
+```
+
+### Step 4: Copy Files to VPS
+
+```bash
+# Copy all required files
+scp .env.prod github_deploy_key origin.pem origin.key scripts/deploy-initial.sh root@your-vps:/tmp/
+```
+
+### Step 5: Run Deployment
+
+```bash
+# SSH to VPS
+ssh root@your-vps
+
+# Make script executable and run
+chmod +x /tmp/deploy-initial.sh
+/tmp/deploy-initial.sh \
+  --env-file /tmp/.env.prod \
+  --repo git@github.com:your-org/sentinel.git \
+  --domain sentinel.yourdomain.com \
+  --ssh-key /tmp/github_deploy_key \
+  --cert-path /tmp/origin.pem \
+  --key-path /tmp/origin.key
+```
+
+### Script Options
+
+```
+Required:
+  --env-file PATH       Path to .env.prod file with secrets
+  --repo URL            Git repository URL (SSH format)
+  --domain DOMAIN       Domain for Nginx (e.g., api.example.com)
+  --ssh-key PATH        Path to GitHub deploy key (private key file)
+
+Optional:
+  --branch BRANCH       Git branch to checkout (default: main)
+  --skip-firewall       Skip UFW firewall configuration
+  --skip-security       Skip Fail2Ban and security hardening
+  --skip-nginx          Skip Nginx reverse proxy installation
+  --cert-path PATH      Path to Cloudflare origin certificate (.pem)
+  --key-path PATH       Path to Cloudflare origin private key (.key)
+```
+
+### Test Deployment (Skip Security)
+
+For initial testing, skip firewall and security to avoid SSH lockout:
+
+```bash
+/tmp/deploy-initial.sh \
+  --env-file /tmp/.env.prod \
+  --repo git@github.com:your-org/sentinel.git \
+  --domain sentinel.yourdomain.com \
+  --ssh-key /tmp/github_deploy_key \
+  --skip-firewall --skip-security
+```
+
+### What the Script Does (13 Steps)
+
+1. **Prerequisites Check** - Verify root, Ubuntu, internet
+2. **System Packages** - curl, git, jq, ufw, fail2ban
+3. **SSH Key Setup** - Configure GitHub authentication
+4. **Docker Installation** - Docker Engine + Compose
+5. **Firewall (UFW)** - Allow SSH, HTTP, HTTPS
+6. **Security Hardening** - Fail2Ban, auto-updates
+7. **Clone Repository** - Git clone to /opt/sentinel
+8. **Environment Setup** - Copy and validate .env
+9. **Production Override** - Create docker-compose.override.yml
+10. **Build & Start** - Docker build and docker compose up
+11. **Verify Services** - Health checks
+12. **Nginx Setup** - Reverse proxy with SSL
+13. **Systemd Service** - Enable on boot
+
+---
+
+## Manual Deployment Guide
+
+The sections below cover manual deployment if you prefer step-by-step control.
+
+---
+
 ## 1. VPS Initial Setup (Ubuntu 22.04/24.04)
 
 ### 1.1 Create Non-Root User
@@ -155,7 +281,7 @@ services:
   sentinel:
     # Remove source mounts for production (use built image)
     volumes: []
-    # Only expose to localhost (Caddy/nginx will proxy)
+    # Only expose to localhost (Nginx will proxy)
     ports:
       - "127.0.0.1:8080:8080"
     logging:
@@ -191,18 +317,26 @@ docker compose logs -f sentinel
 
 ---
 
-## 4. Reverse Proxy with Caddy
+## 4. Reverse Proxy with Nginx
 
-Caddy provides automatic HTTPS and easy configuration.
+Nginx is the recommended reverse proxy for Sentinel due to its excellent SSE streaming support, predictable resource usage, and battle-tested reliability.
 
-### 4.1 Install Caddy
+### Why Nginx over Caddy
+
+| Factor | Nginx | Caddy |
+|--------|-------|-------|
+| Reverse proxy latency | ~9.8ms median | ~11ms median |
+| Memory under load | Stable ~60MB | Can spike to 1GB |
+| SSE streaming | Well-documented `proxy_buffering off` | Known flush issues |
+| Production reliability | 20+ years battle-tested | Reports of occasional hangs |
+
+Since Sentinel runs behind Cloudflare (which handles automatic HTTPS), Caddy's main advantage (auto-TLS) is not needed.
+
+### 4.1 Install Nginx
 
 ```bash
-sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt update
-sudo apt install caddy
+sudo apt install -y nginx
 ```
 
 ### 4.2 Cloudflare Origin Certificate
@@ -213,52 +347,65 @@ In Cloudflare Dashboard > SSL/TLS > Origin Server:
 3. Download certificate and private key
 
 ```bash
-sudo mkdir -p /etc/cloudflare
-sudo nano /etc/cloudflare/origin-cert.pem   # Paste certificate
-sudo nano /etc/cloudflare/origin-key.pem    # Paste private key
-sudo chmod 600 /etc/cloudflare/origin-key.pem
-sudo chown caddy:caddy /etc/cloudflare/*
+sudo mkdir -p /etc/ssl/cloudflare
+sudo nano /etc/ssl/cloudflare/origin.pem   # Paste certificate
+sudo nano /etc/ssl/cloudflare/origin.key   # Paste private key
+sudo chmod 600 /etc/ssl/cloudflare/origin.key
 ```
 
-### 4.3 Caddyfile Configuration
+### 4.3 Nginx Configuration
+
+The project includes a ready-to-use Nginx configuration at `deployment/nginx-sentinel.conf`.
 
 ```bash
-sudo nano /etc/caddy/Caddyfile
+# Copy the configuration
+sudo cp deployment/nginx-sentinel.conf /etc/nginx/sites-available/sentinel
+
+# Edit to set your domain name
+sudo sed -i 's/api\.yourdomain\.com/api.your-actual-domain.com/g' /etc/nginx/sites-available/sentinel
+
+# Enable the site
+sudo ln -sf /etc/nginx/sites-available/sentinel /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# Test and reload
+sudo nginx -t && sudo systemctl reload nginx
+sudo systemctl enable nginx
 ```
 
+### 4.4 Add Cloudflare IP Ranges
+
+To restore real client IPs (Cloudflare proxies all requests), add to `/etc/nginx/conf.d/cloudflare-ips.conf`:
+
+```bash
+sudo nano /etc/nginx/conf.d/cloudflare-ips.conf
 ```
-api.yourdomain.com {
-    reverse_proxy localhost:8080
 
-    # Use Cloudflare origin certificate
-    tls /etc/cloudflare/origin-cert.pem /etc/cloudflare/origin-key.pem
+```nginx
+# Cloudflare IP ranges for real IP restoration
+# Update periodically from https://www.cloudflare.com/ips/
 
-    # Timeouts for long AI requests
-    reverse_proxy localhost:8080 {
-        transport http {
-            read_timeout 300s
-            write_timeout 300s
-        }
-    }
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
 
-    # Request logging
-    log {
-        output file /var/log/caddy/sentinel-access.log
-        format json
-    }
-
-    # Headers
-    header {
-        -Server
-        X-Content-Type-Options nosniff
-        X-Frame-Options DENY
-    }
-}
+real_ip_header CF-Connecting-IP;
 ```
 
 ```bash
-sudo systemctl restart caddy
-sudo systemctl enable caddy
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ---
@@ -348,7 +495,7 @@ Desktop App (with custom User-Agent)
         │
         ▼
 ┌───────────────────────────────────────────┐
-│   Nginx/Caddy (TLS termination)           │
+│   Nginx (TLS termination)                 │
 │   └─ deployment/nginx-sentinel.conf       │
 └───────────────────────────────────────────┘
         │
@@ -637,18 +784,35 @@ docker compose up -d
 
 ### 6.4 Expose Grafana (Optional)
 
-Add to `/etc/caddy/Caddyfile`:
+Create `/etc/nginx/sites-available/monitoring`:
 
-```
-monitoring.yourdomain.com {
-    reverse_proxy localhost:3000
-    tls /etc/cloudflare/origin-cert.pem /etc/cloudflare/origin-key.pem
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name monitoring.yourdomain.com;
+
+    ssl_certificate /etc/ssl/cloudflare/origin.pem;
+    ssl_certificate_key /etc/ssl/cloudflare/origin.key;
 
     # Basic auth for security
-    basicauth * {
-        admin $2a$14$... # Use: caddy hash-password
+    auth_basic "Monitoring";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
     }
 }
+```
+
+```bash
+# Create password file (install apache2-utils if needed)
+sudo htpasswd -c /etc/nginx/.htpasswd admin
+
+# Enable site
+sudo ln -sf /etc/nginx/sites-available/monitoring /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ---
@@ -702,10 +866,11 @@ sudo systemctl enable sentinel
 - [ ] Services healthy: `docker compose ps`
 
 ### Reverse Proxy
-- [ ] Caddy or Nginx installed
-- [ ] Cloudflare origin certificate installed
-- [ ] Reverse proxy configured (use `deployment/nginx-sentinel.conf` as reference)
-- [ ] Reverse proxy service running
+- [ ] Nginx installed
+- [ ] Cloudflare origin certificate installed at `/etc/ssl/cloudflare/`
+- [ ] `deployment/nginx-sentinel.conf` copied and configured
+- [ ] Cloudflare IP ranges added for real IP restoration
+- [ ] Nginx service running
 
 ### Cloudflare
 - [ ] DNS A record pointing to VPS (orange cloud enabled)
