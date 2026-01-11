@@ -98,6 +98,7 @@ Optional:
   --skip-firewall       Skip UFW firewall configuration
   --skip-security       Skip Fail2Ban and security hardening
   --skip-nginx          Skip Nginx reverse proxy installation
+  --use-image           Use pre-built Docker image (recommended for low-memory VPS)
   --cert-path PATH      Path to Cloudflare origin certificate (.pem)
   --key-path PATH       Path to Cloudflare origin private key (.key)
 ```
@@ -113,6 +114,84 @@ For initial testing, skip firewall and security to avoid SSH lockout:
   --domain sentinel.yourdomain.com \
   --ssh-key /tmp/github_deploy_key \
   --skip-firewall --skip-security
+```
+
+### Pre-built Image Deployment (Recommended for Low-Memory VPS)
+
+**Problem:** Rust compilation requires 4-8GB+ RAM. Small VPS instances (1-2GB) will hang or crash during `docker compose build`.
+
+**Solution:** Build the Docker image locally and push to GitHub Container Registry (free for private repos).
+
+#### Step 1: Create GitHub Personal Access Token
+
+1. Go to https://github.com/settings/tokens/new
+2. Create a Classic token with scopes: `read:packages`, `write:packages`
+3. Save the token securely
+
+#### Step 2: Build and Push Image (on your local machine)
+
+```bash
+cd /path/to/sentinel
+
+# Login to GitHub Container Registry
+echo "YOUR_GITHUB_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+
+# Create buildx builder for cross-platform builds (needed for Apple Silicon Macs)
+docker buildx create --name sentinel-builder --use --bootstrap
+
+# Build for linux/amd64 and push to registry
+docker buildx build \
+  --platform linux/amd64 \
+  --tag ghcr.io/YOUR_USERNAME/sentinel:latest \
+  --push \
+  .
+```
+
+#### Step 3: Login to GHCR on VPS
+
+```bash
+ssh root@your-vps
+echo "YOUR_GITHUB_TOKEN" | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+```
+
+#### Step 4: Deploy with Pre-built Image
+
+```bash
+/tmp/deploy-initial.sh \
+  --env-file /tmp/.env.prod \
+  --repo git@github.com:your-org/sentinel.git \
+  --domain sentinel.yourdomain.com \
+  --ssh-key /tmp/github_deploy_key \
+  --cert-path /tmp/origin.pem \
+  --key-path /tmp/origin.key \
+  --use-image
+```
+
+The `--use-image` flag:
+- Skips `docker compose build` (no local compilation)
+- Pulls from `ghcr.io/YOUR_USERNAME/sentinel:latest`
+- Uses `docker-compose.prod.yml` for production configuration
+
+#### Alternative: No Registry (docker save/load)
+
+If you prefer not to use any container registry:
+
+```bash
+# Build on local machine for linux/amd64
+docker buildx build --platform linux/amd64 -t sentinel:latest --load .
+
+# Save to tarball
+docker save sentinel:latest | gzip > sentinel-image.tar.gz
+
+# Copy to VPS
+scp sentinel-image.tar.gz root@your-vps:/tmp/
+
+# On VPS, load the image
+ssh root@your-vps "gunzip -c /tmp/sentinel-image.tar.gz | docker load"
+
+# Then run deployment without --use-image, manually starting with:
+cd /opt/sentinel
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 ### What the Script Does (13 Steps)
@@ -861,8 +940,9 @@ sudo systemctl enable sentinel
 - [ ] Docker and Docker Compose installed
 - [ ] Application cloned to /opt/sentinel
 - [ ] Production .env file configured
-- [ ] docker-compose.override.yml created
-- [ ] Images built successfully
+- [ ] Choose deployment method:
+  - [ ] **Option A (Pre-built image):** Image pushed to GHCR, `docker login ghcr.io` on VPS, deploy with `--use-image`
+  - [ ] **Option B (Build on VPS):** VPS has 4GB+ RAM, docker-compose.override.yml created
 - [ ] Services healthy: `docker compose ps`
 
 ### Reverse Proxy
@@ -910,6 +990,8 @@ sudo systemctl enable sentinel
 
 ## 9. Maintenance Commands
 
+### Standard Deployment (built on VPS)
+
 ```bash
 # View logs
 docker compose -f /opt/sentinel/docker-compose.yml logs -f
@@ -931,6 +1013,47 @@ docker exec -it sentinel-redis redis-cli
 
 # View metrics
 curl -s http://localhost:8080/metrics
+```
+
+### Pre-built Image Deployment
+
+```bash
+# View logs
+docker compose -f /opt/sentinel/docker-compose.prod.yml logs -f
+
+# Restart services
+docker compose -f /opt/sentinel/docker-compose.prod.yml restart
+
+# Update application (after pushing new image from local machine)
+cd /opt/sentinel
+git pull
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+
+# Check health
+curl -s http://localhost:8080/health | jq
+
+# Redis CLI
+docker exec -it sentinel-redis redis-cli
+
+# View metrics
+curl -s http://localhost:8080/metrics
+```
+
+### Update Workflow (Pre-built Image)
+
+On your local machine:
+```bash
+# Build and push new image
+cd /path/to/sentinel
+docker buildx build --platform linux/amd64 --tag ghcr.io/YOUR_USERNAME/sentinel:latest --push .
+```
+
+On VPS:
+```bash
+cd /opt/sentinel
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 ---
@@ -960,7 +1083,25 @@ Consider using `cargo-chef` for faster builds if you're doing frequent deploymen
 
 ## 11. Deployment Directory Files
 
-The `deployment/` directory contains ready-to-use configuration files:
+The project contains ready-to-use configuration files:
+
+### docker-compose.prod.yml
+
+Production Docker Compose configuration that uses a pre-built image from a container registry instead of building locally. Use this for low-memory VPS deployments.
+
+```bash
+# Pull and start with pre-built image
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Key differences from `docker-compose.yml`:
+- Uses `image: ghcr.io/YOUR_USERNAME/sentinel:latest` instead of `build:`
+- No volume mounts for source code
+- Production-ready logging and resource limits
+- Ports bound to localhost only (Nginx proxies external traffic)
+
+The `deployment/` directory contains additional configuration files:
 
 ### deployment/cloudflare-firewall.sh
 

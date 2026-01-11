@@ -52,6 +52,7 @@ BRANCH="main"
 SKIP_FIREWALL=false
 SKIP_SECURITY=false
 SKIP_NGINX=false
+USE_IMAGE=false
 CERT_PATH=""
 KEY_PATH=""
 
@@ -127,6 +128,8 @@ Optional:
   --skip-firewall       Skip UFW firewall configuration
   --skip-security       Skip Fail2Ban and security hardening
   --skip-nginx          Skip Nginx reverse proxy installation
+  --use-image           Use pre-built Docker image instead of building
+                        (requires docker login to ghcr.io first)
   --cert-path PATH      Path to Cloudflare origin certificate (.pem)
   --key-path PATH       Path to Cloudflare origin private key (.key)
   --help                Show this help message
@@ -182,6 +185,10 @@ parse_args() {
                 ;;
             --skip-nginx)
                 SKIP_NGINX=true
+                shift
+                ;;
+            --use-image)
+                USE_IMAGE=true
                 shift
                 ;;
             --cert-path)
@@ -806,21 +813,50 @@ step_docker_build() {
 
     cd "$INSTALL_DIR"
 
-    # Build images
-    log INFO "Building Docker images (this may take a few minutes)..."
-    if ! docker compose build --no-cache >> "$LOG_FILE" 2>&1; then
-        FAILED_STEP="Docker build"
-        FAILED_MESSAGE="Failed to build Docker images"
-        exit 1
-    fi
-    log OK "Docker images built"
+    if [[ "$USE_IMAGE" == true ]]; then
+        # Use pre-built image from container registry
+        log INFO "Using pre-built Docker image..."
 
-    # Start services
-    log INFO "Starting services..."
-    if ! docker compose up -d >> "$LOG_FILE" 2>&1; then
-        FAILED_STEP="Docker build"
-        FAILED_MESSAGE="Failed to start Docker containers"
-        exit 1
+        # Check if docker-compose.prod.yml exists
+        if [[ ! -f "$INSTALL_DIR/docker-compose.prod.yml" ]]; then
+            FAILED_STEP="Docker build"
+            FAILED_MESSAGE="docker-compose.prod.yml not found. Ensure it exists in the repository."
+            exit 1
+        fi
+
+        # Pull the pre-built image
+        log INFO "Pulling Docker images from registry..."
+        if ! docker compose -f docker-compose.prod.yml pull >> "$LOG_FILE" 2>&1; then
+            FAILED_STEP="Docker build"
+            FAILED_MESSAGE="Failed to pull Docker images. Did you run 'docker login ghcr.io'?"
+            exit 1
+        fi
+        log OK "Docker images pulled"
+
+        # Start services using production compose
+        log INFO "Starting services..."
+        if ! docker compose -f docker-compose.prod.yml up -d >> "$LOG_FILE" 2>&1; then
+            FAILED_STEP="Docker build"
+            FAILED_MESSAGE="Failed to start Docker containers"
+            exit 1
+        fi
+    else
+        # Build images locally (requires significant RAM)
+        log INFO "Building Docker images (this may take a few minutes)..."
+        if ! docker compose build --no-cache >> "$LOG_FILE" 2>&1; then
+            FAILED_STEP="Docker build"
+            FAILED_MESSAGE="Failed to build Docker images"
+            exit 1
+        fi
+        log OK "Docker images built"
+
+        # Start services
+        log INFO "Starting services..."
+        if ! docker compose up -d >> "$LOG_FILE" 2>&1; then
+            FAILED_STEP="Docker build"
+            FAILED_MESSAGE="Failed to start Docker containers"
+            exit 1
+        fi
     fi
 
     # Wait for health checks
@@ -859,9 +895,15 @@ step_verify_services() {
 
     cd "$INSTALL_DIR"
 
+    # Determine which compose file to use
+    local compose_file=""
+    if [[ "$USE_IMAGE" == true ]]; then
+        compose_file="-f docker-compose.prod.yml"
+    fi
+
     # Check Redis
     log INFO "Checking Redis..."
-    if ! docker compose exec -T sentinel-redis redis-cli ping >> "$LOG_FILE" 2>&1; then
+    if ! docker compose $compose_file exec -T sentinel-redis redis-cli ping >> "$LOG_FILE" 2>&1; then
         FAILED_STEP="Service verification"
         FAILED_MESSAGE="Redis is not responding"
         exit 1
@@ -1025,8 +1067,14 @@ step_systemd() {
     CURRENT_STEP=13
     log STEP "Setting up systemd service..."
 
-    # Copy systemd service file
-    if [[ -f "$INSTALL_DIR/deployment/sentinel.service" ]]; then
+    # Determine compose command based on deployment mode
+    local compose_cmd="docker compose"
+    if [[ "$USE_IMAGE" == true ]]; then
+        compose_cmd="docker compose -f docker-compose.prod.yml"
+    fi
+
+    # Copy systemd service file (only if not using pre-built image)
+    if [[ "$USE_IMAGE" != true ]] && [[ -f "$INSTALL_DIR/deployment/sentinel.service" ]]; then
         cp "$INSTALL_DIR/deployment/sentinel.service" /etc/systemd/system/sentinel.service
         log OK "Systemd service file installed"
     else
@@ -1042,8 +1090,8 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/docker compose up -d --remove-orphans
-ExecStop=/usr/bin/docker compose down
+ExecStart=/usr/bin/$compose_cmd up -d --remove-orphans
+ExecStop=/usr/bin/$compose_cmd down
 TimeoutStartSec=120
 TimeoutStopSec=30
 Restart=on-failure
@@ -1078,6 +1126,7 @@ main() {
     [[ "$SKIP_FIREWALL" == true ]] && log WARN "Firewall configuration will be skipped"
     [[ "$SKIP_SECURITY" == true ]] && log WARN "Security hardening will be skipped"
     [[ "$SKIP_NGINX" == true ]] && log WARN "Nginx installation will be skipped"
+    [[ "$USE_IMAGE" == true ]] && log INFO "Using pre-built image (ensure docker login ghcr.io was run)"
     echo ""
 
     step_prerequisites

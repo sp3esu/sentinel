@@ -1,0 +1,109 @@
+# =============================================================================
+# Sentinel AI Proxy - Production Docker Compose
+# =============================================================================
+#
+# This configuration uses a pre-built Docker image instead of building locally.
+# Use this for VPS deployments where building Rust is impractical due to
+# memory constraints.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Prerequisites:
+#   - Docker image built and pushed to ghcr.io/sp3esu/sentinel:latest
+#   - docker login ghcr.io -u sp3esu (with PAT)
+#
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Sentinel AI Proxy Service (Pre-built Image)
+  # ---------------------------------------------------------------------------
+  sentinel:
+    image: ghcr.io/sp3esu/sentinel:latest
+    container_name: sentinel-proxy
+    ports:
+      # Only expose to localhost - Nginx will reverse proxy
+      - "127.0.0.1:8080:8080"
+    environment:
+      - RUST_LOG=${RUST_LOG:-sentinel=info,tower_http=info}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
+      - REDIS_URL=redis://sentinel-redis:6379
+      - SENTINEL_HOST=0.0.0.0
+      - SENTINEL_PORT=8080
+      # These come from .env file
+      - ZION_API_URL=${ZION_API_URL}
+      - ZION_API_KEY=${ZION_API_KEY}
+      - OPENAI_API_URL=${OPENAI_API_URL:-https://api.openai.com/v1}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - .env
+    depends_on:
+      sentinel-redis:
+        condition: service_healthy
+    networks:
+      - sentinel-network
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Redis Service (Caching & Rate Limiting)
+  # ---------------------------------------------------------------------------
+  sentinel-redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    ports:
+      # Only expose to localhost
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - sentinel-redis-data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    networks:
+      - sentinel-network
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+# -----------------------------------------------------------------------------
+# Networks
+# -----------------------------------------------------------------------------
+networks:
+  sentinel-network:
+    driver: bridge
+    name: sentinel-network
+
+# -----------------------------------------------------------------------------
+# Volumes
+# -----------------------------------------------------------------------------
+volumes:
+  sentinel-redis-data:
+    driver: local
