@@ -23,6 +23,8 @@ services:
   sentinel:
     image: ghcr.io/sp3esu/sentinel:latest
     container_name: sentinel-proxy
+    labels:
+      - "com.centurylinklabs.watchtower.scope=sentinel"
     ports:
       # Only expose to localhost - Nginx will reverse proxy
       - "127.0.0.1:8080:8080"
@@ -92,6 +94,34 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # Watchtower - Automatic Container Updates
+  # ---------------------------------------------------------------------------
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: sentinel-watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker/config.json:/config.json:ro
+    environment:
+      - WATCHTOWER_SCOPE=sentinel
+      - WATCHTOWER_POLL_INTERVAL=300
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_STOPPED=true
+      - WATCHTOWER_ROLLING_RESTART=true
+      - WATCHTOWER_TIMEOUT=60s
+    command: --interval 300 sentinel-proxy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    deploy:
+      resources:
+        limits:
+          memory: 64M
 
 # -----------------------------------------------------------------------------
 # Networks

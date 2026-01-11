@@ -14,7 +14,7 @@
 
 [Unit]
 Description=Sentinel AI Proxy
-Documentation=https://github.com/yourusername/sentinel
+Documentation=https://github.com/sp3esu/sentinel
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
@@ -27,14 +27,14 @@ WorkingDirectory=/opt/sentinel
 # Environment file for Docker Compose
 EnvironmentFile=-/opt/sentinel/.env
 
-# Start containers
-ExecStart=/usr/bin/docker compose up -d --remove-orphans
+# Start containers (including Watchtower for auto-updates)
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
 # Stop containers gracefully
-ExecStop=/usr/bin/docker compose down
+ExecStop=/usr/bin/docker compose -f docker-compose.prod.yml down
 
 # Reload (restart containers)
-ExecReload=/usr/bin/docker compose restart
+ExecReload=/usr/bin/docker compose -f docker-compose.prod.yml restart
 
 # Health check command
 ExecStartPost=/bin/bash -c 'sleep 5 && curl -sf http://localhost:8080/health/ready || exit 1'
