@@ -18,7 +18,6 @@ set -euo pipefail
 
 IMAGE="ghcr.io/sp3esu/sentinel:latest"
 VPS_HOST="178.216.200.189"
-VPS_USER="root"
 
 # Colors
 RED='\033[0;31m'
@@ -55,9 +54,9 @@ if ! docker push "$IMAGE"; then
 fi
 success "Image pushed to GHCR"
 
-# Step 3: SSH to VPS and update
-log "Connecting to VPS and triggering update..."
-if ! ssh "${VPS_USER}@${VPS_HOST}" "cd /opt/sentinel && sudo ./scripts/update.sh"; then
+# Step 3: SSH to VPS, pull latest code, and update
+log "Connecting to VPS..."
+if ! ssh "${VPS_HOST}" "cd /opt/sentinel && sudo git pull && sudo ./scripts/update.sh"; then
     error "VPS update failed"
 fi
 
