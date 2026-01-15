@@ -354,7 +354,12 @@ async fn handle_streaming_completion(
                                 }
                                 Err(e) => {
                                     // Log and record metric for parse failures on complete lines
-                                    warn!(error = %e, "Failed to parse complete SSE line");
+                                    warn!(
+                                        error = %e,
+                                        sse_line = %if json_str.len() > 500 { &json_str[..500] } else { json_str },
+                                        line_len = json_str.len(),
+                                        "Failed to parse complete SSE line"
+                                    );
                                     record_sse_parse_error("completions", &model_for_parse_error);
                                 }
                             }

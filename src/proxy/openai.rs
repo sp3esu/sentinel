@@ -101,7 +101,7 @@ impl OpenAIProvider {
         );
 
         let result: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
-            ctx.log_error(&format!("Failed to parse response: {}", e));
+            ctx.log_parse_failure(&e.to_string(), &body_text);
             AppError::UpstreamError(format!("Failed to parse response: {}", e))
         })?;
 
@@ -185,7 +185,7 @@ impl OpenAIProvider {
 
         let body_text = response.text().await?;
         let result: serde_json::Value = serde_json::from_str(&body_text).map_err(|e| {
-            ctx.log_error(&format!("Failed to parse response: {}", e));
+            ctx.log_parse_failure(&e.to_string(), &body_text);
             AppError::UpstreamError(format!("Failed to parse response: {}", e))
         })?;
 

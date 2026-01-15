@@ -146,6 +146,30 @@ impl RequestContext {
         );
     }
 
+    /// Log JSON parse failure with response body for debugging
+    ///
+    /// Use this when parsing a successful (2xx) response fails.
+    /// The body is truncated to 1000 chars to prevent log flooding.
+    pub fn log_parse_failure(&self, parse_error: &str, body: &str) {
+        const MAX_BODY_LEN: usize = 1000;
+        let truncated = if body.len() > MAX_BODY_LEN {
+            &body[..MAX_BODY_LEN]
+        } else {
+            body
+        };
+
+        error!(
+            trace_id = %self.trace_id,
+            provider = %self.provider,
+            endpoint = %self.endpoint,
+            elapsed_ms = %self.elapsed_ms(),
+            error = %parse_error,
+            body_len = body.len(),
+            body = %truncated,
+            "Failed to parse response body"
+        );
+    }
+
     /// Log successful request completion
     pub fn log_request_complete(&self, tokens: Option<u64>) {
         info!(
