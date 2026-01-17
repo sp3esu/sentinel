@@ -40,9 +40,9 @@ echo "          SENTINEL PRODUCTION DEPLOYMENT"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 
-# Step 1: Build image locally
-log "Building Docker image..."
-if ! docker build -t "$IMAGE" .; then
+# Step 1: Build image locally for linux/amd64 (VPS architecture)
+log "Building Docker image for linux/amd64..."
+if ! docker build --platform linux/amd64 -t "$IMAGE" .; then
     error "Docker build failed"
 fi
 success "Image built"
