@@ -7,6 +7,19 @@ use std::time::Instant;
 use tracing::{debug, error, info, warn, Span};
 use uuid::Uuid;
 
+/// Truncate a string to at most `max_bytes` bytes, ensuring we don't split UTF-8 characters.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Find the last valid char boundary at or before max_bytes
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Context for tracking a request through the system
 ///
 /// Provides correlation IDs and timing information for debugging
@@ -142,21 +155,17 @@ impl RequestContext {
             error_body = %body,
             "⬅ UPSTREAM ERROR from {provider}: {body}",
             provider = self.provider,
-            body = if body.len() > 500 { &body[..500] } else { body },
+            body = truncate_utf8(body, 500),
         );
     }
 
     /// Log JSON parse failure with response body for debugging
     ///
     /// Use this when parsing a successful (2xx) response fails.
-    /// The body is truncated to 1000 chars to prevent log flooding.
+    /// The body is truncated to 1000 bytes to prevent log flooding.
     pub fn log_parse_failure(&self, parse_error: &str, body: &str) {
         const MAX_BODY_LEN: usize = 1000;
-        let truncated = if body.len() > MAX_BODY_LEN {
-            &body[..MAX_BODY_LEN]
-        } else {
-            body
-        };
+        let truncated = truncate_utf8(body, MAX_BODY_LEN);
 
         error!(
             trace_id = %self.trace_id,
@@ -315,5 +324,70 @@ mod tests {
         let ctx = RequestContext::new("openai", "/test");
         std::thread::sleep(std::time::Duration::from_millis(10));
         assert!(ctx.elapsed_ms() >= 10);
+    }
+
+    #[test]
+    fn test_truncate_utf8_short_string() {
+        // String shorter than limit should be returned unchanged
+        let s = "hello";
+        assert_eq!(truncate_utf8(s, 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_utf8_exact_length() {
+        // String exactly at limit should be returned unchanged
+        let s = "hello";
+        assert_eq!(truncate_utf8(s, 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_utf8_ascii() {
+        // ASCII string should truncate at exact byte position
+        let s = "hello world";
+        assert_eq!(truncate_utf8(s, 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_utf8_emoji_boundary() {
+        // Emoji "😀" is 4 bytes. Truncating at byte 2 should give empty string
+        // or truncating at byte 5 of "a😀" should give just "a"
+        let s = "a😀b";  // 'a' (1 byte) + '😀' (4 bytes) + 'b' (1 byte) = 6 bytes
+        assert_eq!(truncate_utf8(s, 1), "a");
+        assert_eq!(truncate_utf8(s, 2), "a");  // Can't include partial emoji
+        assert_eq!(truncate_utf8(s, 3), "a");
+        assert_eq!(truncate_utf8(s, 4), "a");
+        assert_eq!(truncate_utf8(s, 5), "a😀");  // Now emoji fits
+        assert_eq!(truncate_utf8(s, 6), "a😀b");
+    }
+
+    #[test]
+    fn test_truncate_utf8_chinese_characters() {
+        // Chinese character "中" is 3 bytes
+        let s = "中文测试";  // Each char is 3 bytes = 12 bytes total
+        assert_eq!(truncate_utf8(s, 3), "中");
+        assert_eq!(truncate_utf8(s, 4), "中");  // Can't include partial char
+        assert_eq!(truncate_utf8(s, 5), "中");
+        assert_eq!(truncate_utf8(s, 6), "中文");
+    }
+
+    #[test]
+    fn test_truncate_utf8_mixed_content() {
+        // Mix of ASCII and multi-byte chars
+        let s = "Hello, 世界!";  // "Hello, " (7 bytes) + "世" (3) + "界" (3) + "!" (1) = 14 bytes
+        assert_eq!(truncate_utf8(s, 7), "Hello, ");
+        assert_eq!(truncate_utf8(s, 8), "Hello, ");  // Can't fit partial 世
+        assert_eq!(truncate_utf8(s, 10), "Hello, 世");
+    }
+
+    #[test]
+    fn test_truncate_utf8_empty_string() {
+        assert_eq!(truncate_utf8("", 10), "");
+        assert_eq!(truncate_utf8("", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_utf8_zero_limit() {
+        assert_eq!(truncate_utf8("hello", 0), "");
+        assert_eq!(truncate_utf8("😀", 0), "");
     }
 }
