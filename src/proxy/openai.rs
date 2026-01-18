@@ -12,7 +12,7 @@ use tracing::{debug, instrument};
 
 use crate::config::Config;
 use crate::error::{AppError, AppResult};
-use crate::proxy::headers::{build_default_headers, build_proxy_headers, is_hop_by_hop_header};
+use crate::proxy::headers::{build_default_headers, is_hop_by_hop_header};
 use crate::proxy::logging::RequestContext;
 use crate::proxy::provider::{AiProvider, ByteStream};
 
@@ -59,12 +59,11 @@ impl OpenAIProvider {
         &self,
         endpoint: &str,
         body: &serde_json::Value,
-        incoming_headers: &HeaderMap,
         ctx: &RequestContext,
     ) -> AppResult<serde_json::Value> {
         let url = format!("{}{}", self.base_url, endpoint);
 
-        let headers = build_proxy_headers(incoming_headers, &self.api_key);
+        let headers = build_default_headers(&self.api_key);
         ctx.log_headers_prepared(headers.len());
         ctx.log_upstream_request(&url, None);
 
@@ -114,12 +113,11 @@ impl OpenAIProvider {
         &self,
         endpoint: &str,
         body: &serde_json::Value,
-        incoming_headers: &HeaderMap,
         ctx: &RequestContext,
     ) -> AppResult<ByteStream> {
         let url = format!("{}{}", self.base_url, endpoint);
 
-        let headers = build_proxy_headers(incoming_headers, &self.api_key);
+        let headers = build_default_headers(&self.api_key);
         ctx.log_headers_prepared(headers.len());
         ctx.log_upstream_request(&url, None);
 
@@ -226,64 +224,59 @@ impl AiProvider for OpenAIProvider {
         "openai"
     }
 
-    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "chat/completions"))]
+    #[instrument(skip(self, request, _incoming_headers), fields(provider = "openai", endpoint = "chat/completions"))]
     async fn chat_completions(
         &self,
         request: serde_json::Value,
-        incoming_headers: &HeaderMap,
+        _incoming_headers: &HeaderMap,
     ) -> AppResult<serde_json::Value> {
         let ctx = RequestContext::new(self.name(), "/v1/chat/completions");
         ctx.log_request_start();
-        self.post("/chat/completions", &request, incoming_headers, &ctx)
-            .await
+        self.post("/chat/completions", &request, &ctx).await
     }
 
-    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "chat/completions", streaming = true))]
+    #[instrument(skip(self, request, _incoming_headers), fields(provider = "openai", endpoint = "chat/completions", streaming = true))]
     async fn chat_completions_stream(
         &self,
         request: serde_json::Value,
-        incoming_headers: &HeaderMap,
+        _incoming_headers: &HeaderMap,
     ) -> AppResult<ByteStream> {
         let ctx = RequestContext::new(self.name(), "/v1/chat/completions").with_streaming(true);
         ctx.log_request_start();
-        self.post_stream("/chat/completions", &request, incoming_headers, &ctx)
-            .await
+        self.post_stream("/chat/completions", &request, &ctx).await
     }
 
-    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "completions"))]
+    #[instrument(skip(self, request, _incoming_headers), fields(provider = "openai", endpoint = "completions"))]
     async fn completions(
         &self,
         request: serde_json::Value,
-        incoming_headers: &HeaderMap,
+        _incoming_headers: &HeaderMap,
     ) -> AppResult<serde_json::Value> {
         let ctx = RequestContext::new(self.name(), "/v1/completions");
         ctx.log_request_start();
-        self.post("/completions", &request, incoming_headers, &ctx)
-            .await
+        self.post("/completions", &request, &ctx).await
     }
 
-    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "completions", streaming = true))]
+    #[instrument(skip(self, request, _incoming_headers), fields(provider = "openai", endpoint = "completions", streaming = true))]
     async fn completions_stream(
         &self,
         request: serde_json::Value,
-        incoming_headers: &HeaderMap,
+        _incoming_headers: &HeaderMap,
     ) -> AppResult<ByteStream> {
         let ctx = RequestContext::new(self.name(), "/v1/completions").with_streaming(true);
         ctx.log_request_start();
-        self.post_stream("/completions", &request, incoming_headers, &ctx)
-            .await
+        self.post_stream("/completions", &request, &ctx).await
     }
 
-    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "embeddings"))]
+    #[instrument(skip(self, request, _incoming_headers), fields(provider = "openai", endpoint = "embeddings"))]
     async fn embeddings(
         &self,
         request: serde_json::Value,
-        incoming_headers: &HeaderMap,
+        _incoming_headers: &HeaderMap,
     ) -> AppResult<serde_json::Value> {
         let ctx = RequestContext::new(self.name(), "/v1/embeddings");
         ctx.log_request_start();
-        self.post("/embeddings", &request, incoming_headers, &ctx)
-            .await
+        self.post("/embeddings", &request, &ctx).await
     }
 
     #[instrument(skip(self), fields(provider = "openai", endpoint = "models"))]
@@ -300,36 +293,34 @@ impl AiProvider for OpenAIProvider {
         self.get(&format!("/models/{}", model_id), &ctx).await
     }
 
-    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "responses"))]
+    #[instrument(skip(self, request, _incoming_headers), fields(provider = "openai", endpoint = "responses"))]
     async fn responses(
         &self,
         request: serde_json::Value,
-        incoming_headers: &HeaderMap,
+        _incoming_headers: &HeaderMap,
     ) -> AppResult<serde_json::Value> {
         let ctx = RequestContext::new(self.name(), "/v1/responses");
         ctx.log_request_start();
-        self.post("/responses", &request, incoming_headers, &ctx)
-            .await
+        self.post("/responses", &request, &ctx).await
     }
 
-    #[instrument(skip(self, request, incoming_headers), fields(provider = "openai", endpoint = "responses", streaming = true))]
+    #[instrument(skip(self, request, _incoming_headers), fields(provider = "openai", endpoint = "responses", streaming = true))]
     async fn responses_stream(
         &self,
         request: serde_json::Value,
-        incoming_headers: &HeaderMap,
+        _incoming_headers: &HeaderMap,
     ) -> AppResult<ByteStream> {
         let ctx = RequestContext::new(self.name(), "/v1/responses").with_streaming(true);
         ctx.log_request_start();
-        self.post_stream("/responses", &request, incoming_headers, &ctx)
-            .await
+        self.post_stream("/responses", &request, &ctx).await
     }
 
-    #[instrument(skip(self, incoming_headers, body), fields(provider = "openai", method = %method, path = %path))]
+    #[instrument(skip(self, _incoming_headers, body), fields(provider = "openai", method = %method, path = %path))]
     async fn forward_raw(
         &self,
         method: Method,
         path: &str,
-        incoming_headers: HeaderMap,
+        _incoming_headers: HeaderMap,
         body: Body,
     ) -> AppResult<Response<Body>> {
         let ctx = RequestContext::new(self.name(), path);
@@ -338,7 +329,7 @@ impl AiProvider for OpenAIProvider {
         let url = format!("{}{}", self.base_url, path);
 
         // Build headers using the secure filtering
-        let headers = build_proxy_headers(&incoming_headers, &self.api_key);
+        let headers = build_default_headers(&self.api_key);
         ctx.log_headers_prepared(headers.len());
 
         // Convert axum Body to bytes for reqwest

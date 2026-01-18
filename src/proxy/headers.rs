@@ -6,25 +6,6 @@
 use axum::http::header::{self, HeaderName};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 
-/// Headers that are safe to forward to AI providers
-///
-/// SECURITY: This is a whitelist approach - only these headers are forwarded.
-/// The Authorization header is explicitly NOT included because:
-/// - Client requests use internal JWTs for Sentinel authentication
-/// - AI providers require their own API keys
-/// - We MUST replace the Authorization header, never forward it
-pub const SAFE_HEADERS_TO_FORWARD: &[HeaderName] = &[
-    header::CONTENT_TYPE,
-    header::ACCEPT,
-    header::USER_AGENT,
-    header::ACCEPT_ENCODING,
-];
-
-/// Custom headers that are safe to forward (as string names)
-pub const SAFE_CUSTOM_HEADERS: &[&str] = &[
-    "x-request-id", // For request correlation/tracing
-];
-
 /// Hop-by-hop headers that must never be forwarded
 const HOP_BY_HOP_HEADERS: &[HeaderName] = &[
     header::CONNECTION,
@@ -36,56 +17,11 @@ const HOP_BY_HOP_HEADERS: &[HeaderName] = &[
     header::UPGRADE,
 ];
 
-/// Build headers for proxying to an AI provider
+/// Build default headers for AI provider requests
 ///
-/// # Security
-///
-/// This function:
-/// - Only copies whitelisted headers from the incoming request
-/// - Replaces the Authorization header with the provider's API key
-/// - Never forwards client JWTs or other sensitive headers
-///
-/// # Arguments
-///
-/// * `incoming` - Headers from the client request
-/// * `api_key` - The API key for the target AI provider
-pub fn build_proxy_headers(incoming: &HeaderMap, api_key: &str) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-
-    // Copy whitelisted standard headers
-    for header_name in SAFE_HEADERS_TO_FORWARD {
-        if let Some(value) = incoming.get(header_name) {
-            headers.insert(header_name.clone(), value.clone());
-        }
-    }
-
-    // Copy whitelisted custom headers
-    for header_name in SAFE_CUSTOM_HEADERS {
-        if let Some(value) = incoming.get(*header_name) {
-            if let Ok(name) = HeaderName::from_bytes(header_name.as_bytes()) {
-                headers.insert(name, value.clone());
-            }
-        }
-    }
-
-    // Set provider-specific Authorization (REPLACES any incoming Authorization)
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", api_key)).expect("Invalid API key format"),
-    );
-
-    // Ensure Content-Type is set
-    headers
-        .entry(CONTENT_TYPE)
-        .or_insert(HeaderValue::from_static("application/json"));
-
-    headers
-}
-
-/// Build default headers for requests without incoming headers
-///
-/// Used for internal API calls (like listing models) that don't originate
-/// from a client request.
+/// This function creates a minimal set of headers for all requests to AI providers.
+/// Client headers are intentionally NOT forwarded to ensure Sentinel acts as a
+/// complete barrier between clients and AI providers.
 pub fn build_default_headers(api_key: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
 
@@ -121,53 +57,21 @@ pub fn filter_response_headers(response_headers: &HeaderMap) -> HeaderMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::header::HeaderValue;
 
     #[test]
-    fn test_build_proxy_headers_replaces_authorization() {
-        let mut incoming = HeaderMap::new();
-        incoming.insert(
-            AUTHORIZATION,
-            HeaderValue::from_static("Bearer client-jwt-token"),
-        );
-        incoming.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    fn test_build_default_headers_sets_authorization_and_content_type() {
+        let result = build_default_headers("test-api-key");
 
-        let result = build_proxy_headers(&incoming, "provider-api-key");
-
-        // Authorization should be replaced, not forwarded
         assert_eq!(
             result.get(AUTHORIZATION).unwrap().to_str().unwrap(),
-            "Bearer provider-api-key"
+            "Bearer test-api-key"
         );
-    }
-
-    #[test]
-    fn test_build_proxy_headers_copies_safe_headers() {
-        let mut incoming = HeaderMap::new();
-        incoming.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        incoming.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
-        incoming.insert(
-            header::USER_AGENT,
-            HeaderValue::from_static("TestClient/1.0"),
+        assert_eq!(
+            result.get(CONTENT_TYPE).unwrap().to_str().unwrap(),
+            "application/json"
         );
-
-        let result = build_proxy_headers(&incoming, "api-key");
-
-        assert!(result.contains_key(CONTENT_TYPE));
-        assert!(result.contains_key(header::ACCEPT));
-        assert!(result.contains_key(header::USER_AGENT));
-    }
-
-    #[test]
-    fn test_build_proxy_headers_ignores_unsafe_headers() {
-        let mut incoming = HeaderMap::new();
-        incoming.insert("x-internal-secret", HeaderValue::from_static("secret"));
-        incoming.insert(header::COOKIE, HeaderValue::from_static("session=abc"));
-
-        let result = build_proxy_headers(&incoming, "api-key");
-
-        assert!(!result.contains_key("x-internal-secret"));
-        assert!(!result.contains_key(header::COOKIE));
+        // Should only have these two headers
+        assert_eq!(result.len(), 2);
     }
 
     #[test]
