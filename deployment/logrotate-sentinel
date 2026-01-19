@@ -1,0 +1,28 @@
+# /etc/logrotate.d/sentinel
+#
+# Logrotate configuration for Sentinel AI Proxy Nginx logs
+#
+# Installation:
+#   sudo cp deployment/logrotate-sentinel /etc/logrotate.d/sentinel
+#   sudo chown root:root /etc/logrotate.d/sentinel
+#   sudo chmod 644 /etc/logrotate.d/sentinel
+#
+# Test configuration:
+#   sudo logrotate -d /etc/logrotate.d/sentinel
+#
+# Force rotation (for testing):
+#   sudo logrotate -f /etc/logrotate.d/sentinel
+
+/var/log/nginx/sentinel-*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 www-data adm
+    sharedscripts
+    postrotate
+        [ -f /var/run/nginx.pid ] && kill -USR1 $(cat /var/run/nginx.pid)
+    endscript
+}

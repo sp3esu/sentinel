@@ -65,6 +65,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ---------------------------------------------------------------------------
   # Redis Service (Caching & Rate Limiting)
@@ -88,6 +93,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # -----------------------------------------------------------------------------
 # Networks
