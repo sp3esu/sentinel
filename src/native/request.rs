@@ -44,3 +44,105 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub stream: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native::types::{Content, Role};
+
+    #[test]
+    fn test_valid_request_deserializes() {
+        let json = r#"{
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 100
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.model, Some("gpt-4".to_string()));
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0].role, Role::User);
+        assert_eq!(request.temperature, Some(0.7));
+        assert_eq!(request.max_tokens, Some(100));
+        assert!(!request.stream);
+    }
+
+    #[test]
+    fn test_unknown_field_rejected() {
+        let json = r#"{"messages": [], "unknown_field": true}"#;
+        let result: Result<ChatCompletionRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown field"));
+    }
+
+    #[test]
+    fn test_stream_defaults_to_false() {
+        let json = r#"{"messages": []}"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(!request.stream);
+    }
+
+    #[test]
+    fn test_stream_can_be_true() {
+        let json = r#"{"messages": [], "stream": true}"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(request.stream);
+    }
+
+    #[test]
+    fn test_stop_sequence_single_string() {
+        let json = r#"{"messages": [], "stop": "STOP"}"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.stop, Some(StopSequence::Single("STOP".to_string())));
+    }
+
+    #[test]
+    fn test_stop_sequence_array() {
+        let json = r#"{"messages": [], "stop": ["STOP", "END"]}"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            request.stop,
+            Some(StopSequence::Multiple(vec![
+                "STOP".to_string(),
+                "END".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn test_minimal_request() {
+        let json = r#"{"messages": []}"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.model, None);
+        assert!(request.messages.is_empty());
+        assert_eq!(request.temperature, None);
+        assert_eq!(request.max_tokens, None);
+        assert_eq!(request.top_p, None);
+        assert_eq!(request.stop, None);
+        assert!(!request.stream);
+    }
+
+    #[test]
+    fn test_request_with_all_optional_fields() {
+        let request = ChatCompletionRequest {
+            model: Some("gpt-4".to_string()),
+            messages: vec![Message {
+                role: Role::User,
+                content: Content::Text("Hi".to_string()),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: Some(0.8),
+            max_tokens: Some(500),
+            top_p: Some(0.95),
+            stop: Some(StopSequence::Single("END".to_string())),
+            stream: true,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        let deserialized: ChatCompletionRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(request, deserialized);
+    }
+}
