@@ -29,13 +29,13 @@ This roadmap delivers a provider-agnostic LLM API layer for Mindsmith. Starting 
   3. Streaming responses emit normalized SSE chunks regardless of provider format
   4. Errors from providers return unified error response with code, message, and provider hint
   5. Anthropic translation logic exists (validates strict alternation) even though provider not wired
-**Plans**: TBD
+**Plans**: 4 plans in 2 waves
 
 Plans:
-- [ ] 01-01: Unified types definition
-- [ ] 01-02: OpenAI translator (request/response)
-- [ ] 01-03: Streaming normalization
-- [ ] 01-04: Error handling and Anthropic translator scaffold
+- [ ] 01-01-PLAN.md - Unified types definition (Wave 1)
+- [ ] 01-02-PLAN.md - OpenAI translator (Wave 2)
+- [ ] 01-03-PLAN.md - Streaming normalization (Wave 2)
+- [ ] 01-04-PLAN.md - Error handling and Anthropic translator scaffold (Wave 2)
 
 ### Phase 2: API Endpoints
 **Goal**: Expose /native/* endpoints that accept unified format and return responses
@@ -123,7 +123,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Types and Translation | 0/4 | Not started | - |
+| 1. Types and Translation | 0/4 | Planned | - |
 | 2. API Endpoints | 0/2 | Not started | - |
 | 3. Session Management | 0/2 | Not started | - |
 | 4. Tier Routing | 0/3 | Not started | - |
