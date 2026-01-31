@@ -244,3 +244,271 @@ pub fn format_error_chunk(error: &StreamError) -> Bytes {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native::types::Role;
+
+    /// Helper to create a test StreamChunk with given content
+    fn make_test_chunk(content: &str) -> StreamChunk {
+        StreamChunk {
+            id: "chatcmpl-test123".to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: 1234567890,
+            model: "gpt-4".to_string(),
+            choices: vec![StreamChoice {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: Some(content.to_string()),
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }
+    }
+
+    #[test]
+    fn test_format_sse_chunk() {
+        let chunk = make_test_chunk("Hello");
+        let bytes = format_sse_chunk(&chunk);
+        let output = std::str::from_utf8(&bytes).unwrap();
+
+        // Verify SSE format: starts with "data: " and ends with "\n\n"
+        assert!(output.starts_with("data: "), "Should start with 'data: '");
+        assert!(output.ends_with("\n\n"), "Should end with double newline");
+
+        // Extract and parse the JSON
+        let json_str = output.trim_start_matches("data: ").trim_end();
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        // Verify expected fields
+        assert_eq!(parsed["id"], "chatcmpl-test123");
+        assert_eq!(parsed["object"], "chat.completion.chunk");
+        assert_eq!(parsed["created"], 1234567890);
+        assert_eq!(parsed["model"], "gpt-4");
+        assert_eq!(parsed["choices"][0]["delta"]["content"], "Hello");
+    }
+
+    #[test]
+    fn test_format_sse_done() {
+        let bytes = format_sse_done();
+        let output = std::str::from_utf8(&bytes).unwrap();
+
+        // Must be exactly "data: [DONE]\n\n"
+        assert_eq!(output, "data: [DONE]\n\n");
+    }
+
+    #[test]
+    fn test_stream_state_accumulation() {
+        let mut state = StreamState::new();
+
+        // Initially empty
+        assert_eq!(state.get_content(), "");
+        assert!(state.metadata().is_none());
+
+        // Append content
+        state.append_content("Hello");
+        assert_eq!(state.get_content(), "Hello");
+
+        state.append_content(" world");
+        assert_eq!(state.get_content(), "Hello world");
+
+        // Set and get metadata
+        let meta = StreamMetadata {
+            id: "test-id".to_string(),
+            model: "gpt-4".to_string(),
+            created: 12345,
+        };
+        state.set_metadata(meta);
+
+        let stored = state.metadata().unwrap();
+        assert_eq!(stored.id, "test-id");
+        assert_eq!(stored.model, "gpt-4");
+        assert_eq!(stored.created, 12345);
+    }
+
+    #[test]
+    fn test_create_chunk_with_metadata() {
+        let metadata = StreamMetadata {
+            id: "chatcmpl-abc123".to_string(),
+            model: "gpt-4-turbo".to_string(),
+            created: 1700000000,
+        };
+
+        let delta = Delta {
+            role: Some(Role::Assistant),
+            content: Some("Test content".to_string()),
+        };
+
+        let chunk = create_chunk_with_metadata(&metadata, delta, None, None);
+
+        // Verify metadata propagation
+        assert_eq!(chunk.id, "chatcmpl-abc123");
+        assert_eq!(chunk.model, "gpt-4-turbo");
+        assert_eq!(chunk.created, 1700000000);
+        assert_eq!(chunk.object, "chat.completion.chunk");
+
+        // Verify choice structure
+        assert_eq!(chunk.choices.len(), 1);
+        assert_eq!(chunk.choices[0].index, 0);
+        assert_eq!(chunk.choices[0].delta.role, Some(Role::Assistant));
+        assert_eq!(
+            chunk.choices[0].delta.content,
+            Some("Test content".to_string())
+        );
+        assert!(chunk.choices[0].finish_reason.is_none());
+        assert!(chunk.usage.is_none());
+    }
+
+    #[test]
+    fn test_create_chunk_with_finish_reason_and_usage() {
+        let metadata = StreamMetadata {
+            id: "chatcmpl-xyz".to_string(),
+            model: "gpt-4".to_string(),
+            created: 1234567890,
+        };
+
+        let delta = Delta::default();
+        let usage = Usage {
+            prompt_tokens: 10,
+            completion_tokens: 20,
+            total_tokens: 30,
+        };
+
+        let chunk = create_chunk_with_metadata(
+            &metadata,
+            delta,
+            Some("stop".to_string()),
+            Some(usage),
+        );
+
+        assert_eq!(chunk.choices[0].finish_reason, Some("stop".to_string()));
+        assert!(chunk.usage.is_some());
+        let u = chunk.usage.unwrap();
+        assert_eq!(u.prompt_tokens, 10);
+        assert_eq!(u.completion_tokens, 20);
+        assert_eq!(u.total_tokens, 30);
+    }
+
+    #[test]
+    fn test_format_normalized_variants() {
+        // Test Delta variant
+        let chunk = make_test_chunk("Hi");
+        let delta_bytes = format_normalized(&NormalizedChunk::Delta(chunk.clone()));
+        let delta_output = std::str::from_utf8(&delta_bytes).unwrap();
+        assert!(delta_output.starts_with("data: "));
+        assert!(delta_output.ends_with("\n\n"));
+        assert!(delta_output.contains("\"content\":\"Hi\""));
+
+        // Test Done variant
+        let done_bytes = format_normalized(&NormalizedChunk::Done(None));
+        let done_output = std::str::from_utf8(&done_bytes).unwrap();
+        assert_eq!(done_output, "data: [DONE]\n\n");
+
+        // Test Done with usage (still emits [DONE], usage is carried separately)
+        let usage = Usage {
+            prompt_tokens: 5,
+            completion_tokens: 10,
+            total_tokens: 15,
+        };
+        let done_with_usage = format_normalized(&NormalizedChunk::Done(Some(usage)));
+        let done_usage_output = std::str::from_utf8(&done_with_usage).unwrap();
+        assert_eq!(done_usage_output, "data: [DONE]\n\n");
+
+        // Test KeepAlive variant (SSE comment)
+        let keepalive_bytes = format_normalized(&NormalizedChunk::KeepAlive);
+        let keepalive_output = std::str::from_utf8(&keepalive_bytes).unwrap();
+        assert_eq!(keepalive_output, ": keep-alive\n\n");
+    }
+
+    #[test]
+    fn test_format_error_chunk() {
+        // Test ProviderError with code
+        let error = StreamError::ProviderError {
+            message: "Rate limit exceeded".to_string(),
+            code: Some("rate_limit_error".to_string()),
+        };
+        let bytes = format_error_chunk(&error);
+        let output = std::str::from_utf8(&bytes).unwrap();
+
+        assert!(output.starts_with("data: "));
+        assert!(output.ends_with("\n\n"));
+
+        let json_str = output.trim_start_matches("data: ").trim_end();
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(parsed["error"]["message"], "Rate limit exceeded");
+        assert_eq!(parsed["error"]["type"], "stream_error");
+        assert_eq!(parsed["error"]["code"], "rate_limit_error");
+    }
+
+    #[test]
+    fn test_format_error_chunk_without_code() {
+        let error = StreamError::ProviderError {
+            message: "Something went wrong".to_string(),
+            code: None,
+        };
+        let bytes = format_error_chunk(&error);
+        let output = std::str::from_utf8(&bytes).unwrap();
+
+        let json_str = output.trim_start_matches("data: ").trim_end();
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(parsed["error"]["message"], "Something went wrong");
+        assert_eq!(parsed["error"]["type"], "stream_error");
+        assert!(parsed["error"]["code"].is_null());
+    }
+
+    #[test]
+    fn test_format_error_chunk_parse_error() {
+        let error = StreamError::ParseError("Invalid JSON at position 42".to_string());
+        let bytes = format_error_chunk(&error);
+        let output = std::str::from_utf8(&bytes).unwrap();
+
+        let json_str = output.trim_start_matches("data: ").trim_end();
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(parsed["error"]["message"], "Invalid JSON at position 42");
+        assert_eq!(parsed["error"]["code"], "parse_error");
+    }
+
+    #[test]
+    fn test_format_error_chunk_connection_closed() {
+        let error = StreamError::ConnectionClosed;
+        let bytes = format_error_chunk(&error);
+        let output = std::str::from_utf8(&bytes).unwrap();
+
+        let json_str = output.trim_start_matches("data: ").trim_end();
+        let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+
+        assert_eq!(
+            parsed["error"]["message"],
+            "Stream connection closed unexpectedly"
+        );
+        assert_eq!(parsed["error"]["code"], "connection_closed");
+    }
+
+    #[test]
+    fn test_stream_error_display() {
+        // Test Display trait implementations
+        let parse_err = StreamError::ParseError("bad json".to_string());
+        assert_eq!(
+            parse_err.to_string(),
+            "Failed to parse provider chunk: bad json"
+        );
+
+        let conn_err = StreamError::ConnectionClosed;
+        assert_eq!(
+            conn_err.to_string(),
+            "Stream connection closed unexpectedly"
+        );
+
+        let provider_err = StreamError::ProviderError {
+            message: "API error".to_string(),
+            code: Some("api_error".to_string()),
+        };
+        assert_eq!(provider_err.to_string(), "Provider error: API error");
+    }
+}
