@@ -1,0 +1,144 @@
+# Requirements: Mindsmith Native API
+
+**Defined:** 2026-01-31
+**Core Value:** Mindsmith can build and chat with assistants using any LLM provider through a single, stable API
+
+## v1 Requirements
+
+Requirements for initial release. Each maps to roadmap phases.
+
+### Unified Types
+
+- [ ] **TYPE-01**: Native API accepts unified message format (role, content)
+- [ ] **TYPE-02**: System prompts handled uniformly regardless of provider
+- [ ] **TYPE-03**: Common parameters supported (temperature, max_tokens, top_p, stop)
+- [ ] **TYPE-04**: Unified error response format across all providers
+
+### Message Translation
+
+- [ ] **TRNS-01**: Messages translated to OpenAI format
+- [ ] **TRNS-02**: Messages translated to Anthropic format (strict alternation enforced)
+- [ ] **TRNS-03**: Streaming chunks normalized to unified format
+- [ ] **TRNS-04**: Provider-specific response fields stripped from output
+
+### Tool Calling
+
+- [ ] **TOOL-01**: Unified tool definition format (name, description, parameters)
+- [ ] **TOOL-02**: Tool schemas translated to OpenAI function format
+- [ ] **TOOL-03**: Tool schemas translated to Anthropic tool format
+- [ ] **TOOL-04**: Tool call responses normalized to unified format
+- [ ] **TOOL-05**: Tool results accepted and translated to provider format
+- [ ] **TOOL-06**: Streaming with tool calls handled correctly
+
+### Session Management
+
+- [ ] **SESS-01**: Conversation ID tracks session
+- [ ] **SESS-02**: Provider selection stored per session in Redis
+- [ ] **SESS-03**: Same provider used for all requests in a session
+- [ ] **SESS-04**: New session triggers fresh provider selection
+
+### Tier Routing
+
+- [ ] **TIER-01**: API accepts tier level (simple, moderate, complex)
+- [ ] **TIER-02**: Tier maps to available models from configuration
+- [ ] **TIER-03**: Provider selected based on cost (prefer cheaper)
+- [ ] **TIER-04**: Unavailable providers skipped (rate limited, down)
+- [ ] **TIER-05**: Model configuration loaded from Zion API
+- [ ] **TIER-06**: Fallback configuration when Zion unavailable
+
+### API Endpoints
+
+- [ ] **API-01**: POST /native/chat/completions for chat requests
+- [ ] **API-02**: Streaming response via SSE
+- [ ] **API-03**: Non-streaming response option
+- [ ] **API-04**: Existing /v1/* endpoints unchanged
+
+### OpenAPI Documentation
+
+- [ ] **DOCS-01**: OpenAPI 3.x specification for Native API
+- [ ] **DOCS-02**: GET /native/docs returns OpenAPI spec
+- [ ] **DOCS-03**: Docs endpoint protected by dedicated API key
+- [ ] **DOCS-04**: Spec includes all request/response schemas
+
+## v2 Requirements
+
+Deferred to future release. Tracked but not in current roadmap.
+
+### Additional Providers
+
+- **PROV-01**: Anthropic provider implementation
+- **PROV-02**: xAI/Grok provider implementation
+
+### Extended Features
+
+- **EXT-01**: Vision/image support in messages
+- **EXT-02**: File attachment support
+- **EXT-03**: Extended thinking token handling (Anthropic)
+- **EXT-04**: Structured output support
+
+### Advanced Routing
+
+- **ROUT-01**: Latency-based provider selection
+- **ROUT-02**: Load balancing across providers
+- **ROUT-03**: Automatic failover with session migration
+
+## Out of Scope
+
+Explicitly excluded. Documented to prevent scope creep.
+
+| Feature | Reason |
+|---------|--------|
+| Direct model names in API | Abstracted behind tiers — prevents client-provider coupling |
+| Provider-specific parameters | Leaky abstraction — use unified params only |
+| Multiple completions (n > 1) | Not universally supported, adds complexity |
+| Silent failover | Client should control UX — errors bubble up |
+| Server-side conversation storage | Client sends full history — keeps Sentinel stateless |
+| Response metadata (tokens, cost) | Client doesn't need it — usage tracked internally |
+
+## Traceability
+
+Which phases cover which requirements. Updated during roadmap creation.
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| TYPE-01 | TBD | Pending |
+| TYPE-02 | TBD | Pending |
+| TYPE-03 | TBD | Pending |
+| TYPE-04 | TBD | Pending |
+| TRNS-01 | TBD | Pending |
+| TRNS-02 | TBD | Pending |
+| TRNS-03 | TBD | Pending |
+| TRNS-04 | TBD | Pending |
+| TOOL-01 | TBD | Pending |
+| TOOL-02 | TBD | Pending |
+| TOOL-03 | TBD | Pending |
+| TOOL-04 | TBD | Pending |
+| TOOL-05 | TBD | Pending |
+| TOOL-06 | TBD | Pending |
+| SESS-01 | TBD | Pending |
+| SESS-02 | TBD | Pending |
+| SESS-03 | TBD | Pending |
+| SESS-04 | TBD | Pending |
+| TIER-01 | TBD | Pending |
+| TIER-02 | TBD | Pending |
+| TIER-03 | TBD | Pending |
+| TIER-04 | TBD | Pending |
+| TIER-05 | TBD | Pending |
+| TIER-06 | TBD | Pending |
+| API-01 | TBD | Pending |
+| API-02 | TBD | Pending |
+| API-03 | TBD | Pending |
+| API-04 | TBD | Pending |
+| DOCS-01 | TBD | Pending |
+| DOCS-02 | TBD | Pending |
+| DOCS-03 | TBD | Pending |
+| DOCS-04 | TBD | Pending |
+
+**Coverage:**
+- v1 requirements: 32 total
+- Mapped to phases: 0
+- Unmapped: 32 (pending roadmap creation)
+
+---
+*Requirements defined: 2026-01-31*
+*Last updated: 2026-01-31 after initial definition*
