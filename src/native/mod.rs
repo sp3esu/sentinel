@@ -5,6 +5,7 @@
 
 pub mod request;
 pub mod response;
+pub mod streaming;
 pub mod translate;
 pub mod types;
 
