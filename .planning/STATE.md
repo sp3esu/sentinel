@@ -10,28 +10,29 @@ See: .planning/PROJECT.md (updated 2026-01-31)
 ## Current Position
 
 Phase: 2 of 6 (API Endpoints)
-Plan: 0 of 2 in current phase
-Status: Ready to plan
-Last activity: 2026-02-01 - Phase 1 verified and complete
+Plan: 1 of 2 in current phase
+Status: In progress
+Last activity: 2026-02-01 - Completed 02-01-PLAN.md (Chat Completions Endpoint)
 
-Progress: [====                ] 16%
+Progress: [=====               ] 25%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
+- Total plans completed: 5
 - Average duration: 5 min
-- Total execution time: 19 min
+- Total execution time: 23 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-types-and-translation | 4 | 19 min | 5 min |
+| 02-api-endpoints | 1 | 4 min | 4 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (8min), 01-02 (3min), 01-03 (4min), 01-04 (4min)
-- Trend: Steady 4-5 min after initial 8 min
+- Last 5 plans: 01-02 (3min), 01-03 (4min), 01-04 (4min), 02-01 (4min)
+- Trend: Steady at 4 min
 
 *Updated after each plan completion*
 
@@ -55,6 +56,10 @@ Recent decisions affecting current work:
 | NormalizedChunk abstracts stream events | 01-03 | Delta/Done/KeepAlive unified for provider-agnostic handling |
 | OpenAI-compatible error format | 01-04 | Error response: {error: {message, type, code, provider?}} |
 | Scaffold pattern for Anthropic | 01-04 | Validate now, implement translation in v2 |
+| Extract user from extensions | 02-01 | Auth middleware stores user in extensions, not as handler param |
+| Router state type | 02-01 | Return Router<Arc<AppState>> without .with_state() for nesting |
+| Model required in Phase 2 | 02-01 | Phase 4 adds tier routing which makes model optional |
+| Stream pass-through | 02-01 | Native API is OpenAI-compatible; minimal transformation needed |
 
 ### Pending Todos
 
@@ -67,5 +72,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-01
-Stopped at: Phase 1 verified and complete
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None
