@@ -11,3 +11,4 @@ pub mod models;
 pub mod rate_limiting;
 pub mod token_estimation_accuracy;
 pub mod token_tracking;
+pub mod native_chat;
