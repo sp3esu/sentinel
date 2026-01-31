@@ -9,17 +9,17 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Unified Types
 
-- [ ] **TYPE-01**: Native API accepts unified message format (role, content)
-- [ ] **TYPE-02**: System prompts handled uniformly regardless of provider
-- [ ] **TYPE-03**: Common parameters supported (temperature, max_tokens, top_p, stop)
-- [ ] **TYPE-04**: Unified error response format across all providers
+- [x] **TYPE-01**: Native API accepts unified message format (role, content)
+- [x] **TYPE-02**: System prompts handled uniformly regardless of provider
+- [x] **TYPE-03**: Common parameters supported (temperature, max_tokens, top_p, stop)
+- [x] **TYPE-04**: Unified error response format across all providers
 
 ### Message Translation
 
-- [ ] **TRNS-01**: Messages translated to OpenAI format
-- [ ] **TRNS-02**: Messages translated to Anthropic format (strict alternation enforced)
-- [ ] **TRNS-03**: Streaming chunks normalized to unified format
-- [ ] **TRNS-04**: Provider-specific response fields stripped from output
+- [x] **TRNS-01**: Messages translated to OpenAI format
+- [x] **TRNS-02**: Messages translated to Anthropic format (strict alternation enforced)
+- [x] **TRNS-03**: Streaming chunks normalized to unified format
+- [x] **TRNS-04**: Provider-specific response fields stripped from output
 
 ### Tool Calling
 
@@ -101,14 +101,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TYPE-01 | Phase 1 | Pending |
-| TYPE-02 | Phase 1 | Pending |
-| TYPE-03 | Phase 1 | Pending |
-| TYPE-04 | Phase 1 | Pending |
-| TRNS-01 | Phase 1 | Pending |
-| TRNS-02 | Phase 1 | Pending |
-| TRNS-03 | Phase 1 | Pending |
-| TRNS-04 | Phase 1 | Pending |
+| TYPE-01 | Phase 1 | Complete |
+| TYPE-02 | Phase 1 | Complete |
+| TYPE-03 | Phase 1 | Complete |
+| TYPE-04 | Phase 1 | Complete |
+| TRNS-01 | Phase 1 | Complete |
+| TRNS-02 | Phase 1 | Complete |
+| TRNS-03 | Phase 1 | Complete |
+| TRNS-04 | Phase 1 | Complete |
 | TOOL-01 | Phase 5 | Pending |
 | TOOL-02 | Phase 5 | Pending |
 | TOOL-03 | Phase 5 | Pending |
