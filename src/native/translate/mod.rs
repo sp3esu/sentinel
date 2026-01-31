@@ -4,6 +4,8 @@
 //! translating chat completion requests/responses between the unified Native API
 //! format and provider-specific formats (OpenAI, Anthropic, etc.).
 
+// Note: anthropic module will be added when Anthropic provider is implemented
+// pub mod anthropic;
 pub mod openai;
 
 use thiserror::Error;
@@ -29,6 +31,22 @@ pub enum TranslationError {
     /// JSON serialization/deserialization error
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
+
+    /// No user message in the conversation (required by Anthropic)
+    #[error("Conversation must contain at least one user message")]
+    NoUserMessage,
+
+    /// First non-system message must be from user (required by Anthropic)
+    #[error("First non-system message must be from user role")]
+    FirstMustBeUser,
+
+    /// Messages must alternate between user and assistant (required by Anthropic)
+    #[error("Messages must alternate between user and assistant roles")]
+    MustAlternate,
+
+    /// Feature not yet implemented (used for scaffold methods)
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 }
 
 /// Trait for translating between Native API format and provider-specific formats
@@ -80,4 +98,5 @@ pub trait MessageTranslator {
 }
 
 // Re-export key types for convenience
+// pub use anthropic::AnthropicTranslator;  // TODO: Add when anthropic module exists
 pub use openai::OpenAITranslator;
