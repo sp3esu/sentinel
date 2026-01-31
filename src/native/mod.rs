@@ -5,6 +5,7 @@
 
 pub mod request;
 pub mod response;
+pub mod translate;
 pub mod types;
 
 // Re-export key types for convenience
