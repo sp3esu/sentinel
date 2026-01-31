@@ -48,10 +48,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### API Endpoints
 
-- [ ] **API-01**: POST /native/chat/completions for chat requests
-- [ ] **API-02**: Streaming response via SSE
-- [ ] **API-03**: Non-streaming response option
-- [ ] **API-04**: Existing /v1/* endpoints unchanged
+- [x] **API-01**: POST /native/chat/completions for chat requests
+- [x] **API-02**: Streaming response via SSE
+- [x] **API-03**: Non-streaming response option
+- [x] **API-04**: Existing /v1/* endpoints unchanged
 
 ### OpenAPI Documentation
 
@@ -125,10 +125,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TIER-04 | Phase 4 | Pending |
 | TIER-05 | Phase 4 | Pending |
 | TIER-06 | Phase 4 | Pending |
-| API-01 | Phase 2 | Pending |
-| API-02 | Phase 2 | Pending |
-| API-03 | Phase 2 | Pending |
-| API-04 | Phase 2 | Pending |
+| API-01 | Phase 2 | Complete |
+| API-02 | Phase 2 | Complete |
+| API-03 | Phase 2 | Complete |
+| API-04 | Phase 2 | Complete |
 | DOCS-01 | Phase 6 | Pending |
 | DOCS-02 | Phase 6 | Pending |
 | DOCS-03 | Phase 6 | Pending |
