@@ -46,11 +46,11 @@ Plans:
   2. Streaming mode returns SSE chunks ending with [DONE]
   3. Non-streaming mode returns complete response in single JSON body
   4. Existing /v1/* endpoints work unchanged (regression-free)
-**Plans**: TBD
+**Plans**: 2 plans in 2 waves
 
 Plans:
-- [ ] 02-01: Chat completions endpoint (streaming + non-streaming)
-- [ ] 02-02: Integration tests and /v1/* regression verification
+- [ ] 02-01-PLAN.md - Chat completions endpoint with streaming + non-streaming (Wave 1)
+- [ ] 02-02-PLAN.md - Integration tests and /v1/* regression verification (Wave 2)
 
 ### Phase 3: Session Management
 **Goal**: Track conversations to ensure consistent provider selection within a session
