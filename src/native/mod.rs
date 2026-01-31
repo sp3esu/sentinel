@@ -3,6 +3,7 @@
 //! This module defines the canonical message format that all providers translate to/from.
 //! Types are designed to be OpenAI-compatible for seamless integration with existing clients.
 
+pub mod error;
 pub mod request;
 pub mod response;
 pub mod streaming;
