@@ -10,7 +10,7 @@ This roadmap delivers a provider-agnostic LLM API layer for Mindsmith. Starting 
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
-- [ ] **Phase 1: Types and Translation** - Define unified message format and translate to/from OpenAI
+- [x] **Phase 1: Types and Translation** - Define unified message format and translate to/from OpenAI
 - [ ] **Phase 2: API Endpoints** - Create /native/* routes with basic request handling
 - [ ] **Phase 3: Session Management** - Track conversations with provider stickiness
 - [ ] **Phase 4: Tier Routing** - Map complexity tiers to models with config from Zion
@@ -32,10 +32,10 @@ This roadmap delivers a provider-agnostic LLM API layer for Mindsmith. Starting 
 **Plans**: 4 plans in 2 waves
 
 Plans:
-- [ ] 01-01-PLAN.md - Unified types definition (Wave 1)
-- [ ] 01-02-PLAN.md - OpenAI translator (Wave 2)
-- [ ] 01-03-PLAN.md - Streaming normalization (Wave 2)
-- [ ] 01-04-PLAN.md - Error handling and Anthropic translator scaffold (Wave 2)
+- [x] 01-01-PLAN.md - Unified types definition (Wave 1)
+- [x] 01-02-PLAN.md - OpenAI translator (Wave 2)
+- [x] 01-03-PLAN.md - Streaming normalization (Wave 2)
+- [x] 01-04-PLAN.md - Error handling and Anthropic translator scaffold (Wave 2)
 
 ### Phase 2: API Endpoints
 **Goal**: Expose /native/* endpoints that accept unified format and return responses
@@ -123,7 +123,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Types and Translation | 0/4 | Planned | - |
+| 1. Types and Translation | 4/4 | Complete | 2026-01-31 |
 | 2. API Endpoints | 0/2 | Not started | - |
 | 3. Session Management | 0/2 | Not started | - |
 | 4. Tier Routing | 0/3 | Not started | - |
