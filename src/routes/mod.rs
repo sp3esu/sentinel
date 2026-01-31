@@ -38,6 +38,7 @@ use tracing::warn;
 
 use crate::{
     middleware::{auth::auth_middleware, rate_limiter::rate_limit_middleware},
+    native_routes,
     AppState,
 };
 
@@ -96,6 +97,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .merge(debug_routes)
         // Nest protected routes under /v1 - this makes fallback work correctly
         .nest("/v1", protected_routes)
+        // Nest native API routes under /native - unified format with translation
+        .nest("/native", native_routes::create_native_router(state.clone()))
         // Fallback for non-/v1 routes
         .fallback(fallback_handler)
         // Global middleware (applied to all routes)
@@ -126,7 +129,7 @@ async fn fallback_handler(request: Request<Body>) -> impl IntoResponse {
         StatusCode::NOT_FOUND,
         Json(json!({
             "error": {
-                "message": format!("Endpoint {} {} not found. API endpoints are under /v1/", method, path),
+                "message": format!("Endpoint {} {} not found. API endpoints are under /v1/ and /native/", method, path),
                 "type": "not_found_error",
                 "code": "endpoint_not_found"
             }

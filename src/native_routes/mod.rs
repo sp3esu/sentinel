@@ -24,7 +24,11 @@ use crate::{
 /// Middleware is applied in reverse order (last applied runs first):
 /// - auth_middleware runs first
 /// - rate_limit_middleware runs second
-pub fn create_native_router(state: Arc<AppState>) -> Router {
+///
+/// Returns a `Router<Arc<AppState>>` to be nested into the main router.
+/// Do not call `.with_state()` on the returned router - the parent router
+/// will provide the state.
+pub fn create_native_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/chat/completions", post(chat::native_chat_completions))
         // Apply rate limiting (runs after auth)
@@ -33,9 +37,5 @@ pub fn create_native_router(state: Arc<AppState>) -> Router {
             rate_limit_middleware,
         ))
         // Apply authentication (runs first)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ))
-        .with_state(state)
+        .layer(middleware::from_fn_with_state(state, auth_middleware))
 }
