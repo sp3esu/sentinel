@@ -4,8 +4,7 @@
 //! translating chat completion requests/responses between the unified Native API
 //! format and provider-specific formats (OpenAI, Anthropic, etc.).
 
-// Note: anthropic module will be added when Anthropic provider is implemented
-// pub mod anthropic;
+pub mod anthropic;
 pub mod openai;
 
 use thiserror::Error;
@@ -98,5 +97,5 @@ pub trait MessageTranslator {
 }
 
 // Re-export key types for convenience
-// pub use anthropic::AnthropicTranslator;  // TODO: Add when anthropic module exists
+pub use anthropic::AnthropicTranslator;
 pub use openai::OpenAITranslator;
