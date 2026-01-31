@@ -6,6 +6,7 @@
 
 use bytes::Bytes;
 use serde::Serialize;
+use thiserror::Error;
 
 use super::response::{Delta, StreamChoice, StreamChunk, Usage};
 
@@ -155,4 +156,91 @@ pub fn format_error_event(message: &str, code: Option<&str>) -> Bytes {
     };
     let json = serde_json::to_string(&event).expect("SseErrorEvent should always serialize");
     Bytes::from(format!("data: {}\n\n", json))
+}
+
+// ============================================================================
+// Normalized Chunk Types
+// ============================================================================
+
+/// A normalized stream chunk that abstracts over different chunk types.
+///
+/// This enum represents all possible events in a normalized stream:
+/// - Content deltas (the actual generated text)
+/// - Stream completion (with optional usage statistics)
+/// - Keep-alive comments (for connection maintenance)
+#[derive(Debug, Clone)]
+pub enum NormalizedChunk {
+    /// Content delta (text being generated)
+    Delta(StreamChunk),
+    /// Stream complete with optional usage statistics
+    Done(Option<Usage>),
+    /// Keep-alive comment (no data, just connection maintenance)
+    KeepAlive,
+}
+
+/// Format a normalized chunk as SSE bytes.
+///
+/// Converts any normalized chunk type to the appropriate SSE format:
+/// - `Delta` -> `data: {json}\n\n`
+/// - `Done` -> `data: [DONE]\n\n`
+/// - `KeepAlive` -> `: keep-alive\n\n` (SSE comment)
+///
+/// # Arguments
+/// * `chunk` - The normalized chunk to format
+///
+/// # Returns
+/// Bytes containing the SSE-formatted event
+pub fn format_normalized(chunk: &NormalizedChunk) -> Bytes {
+    match chunk {
+        NormalizedChunk::Delta(stream_chunk) => format_sse_chunk(stream_chunk),
+        NormalizedChunk::Done(_) => format_sse_done(),
+        NormalizedChunk::KeepAlive => Bytes::from_static(b": keep-alive\n\n"),
+    }
+}
+
+// ============================================================================
+// Stream Errors
+// ============================================================================
+
+/// Errors that can occur during stream processing.
+#[derive(Debug, Error)]
+pub enum StreamError {
+    /// Failed to parse a chunk from the provider
+    #[error("Failed to parse provider chunk: {0}")]
+    ParseError(String),
+
+    /// Stream connection closed unexpectedly
+    #[error("Stream connection closed unexpectedly")]
+    ConnectionClosed,
+
+    /// Provider returned an error in the stream
+    #[error("Provider error: {message}")]
+    ProviderError {
+        /// Error message from the provider
+        message: String,
+        /// Optional error code
+        code: Option<String>,
+    },
+}
+
+/// Format a stream error as an SSE error event.
+///
+/// Converts a StreamError to a structured JSON error event that clients can parse.
+/// This allows error information to be transmitted before the stream closes.
+///
+/// # Arguments
+/// * `error` - The stream error to format
+///
+/// # Returns
+/// Bytes containing the SSE-formatted error event
+pub fn format_error_chunk(error: &StreamError) -> Bytes {
+    match error {
+        StreamError::ParseError(msg) => format_error_event(msg, Some("parse_error")),
+        StreamError::ConnectionClosed => {
+            format_error_event("Stream connection closed unexpectedly", Some("connection_closed"))
+        }
+        StreamError::ProviderError { message, code } => {
+            format_error_event(message, code.as_deref())
+        }
+    }
 }
