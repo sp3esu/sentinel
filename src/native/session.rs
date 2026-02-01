@@ -13,6 +13,7 @@ use tracing::{debug, instrument};
 use crate::{
     cache::redis::{keys, RedisCache},
     error::AppResult,
+    native::types::Tier,
 };
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -63,9 +64,9 @@ impl SessionCacheBackend {
 
 /// Session data stored in Redis
 ///
-/// Represents a conversation's provider/model binding for stickiness.
+/// Represents a conversation's provider/model/tier binding for stickiness.
 /// Once a session is created, all subsequent requests in the same
-/// conversation use the same provider and model.
+/// conversation use the same provider and model. Tier can only upgrade.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Session {
     /// Unique session identifier (same as conversation_id)
@@ -74,6 +75,8 @@ pub struct Session {
     pub provider: String,
     /// Model identifier used for this session
     pub model: String,
+    /// Complexity tier for this session
+    pub tier: Tier,
     /// User's external ID (for debugging/cleanup)
     pub external_id: String,
     /// Unix timestamp when session was created
@@ -131,20 +134,22 @@ impl SessionManager {
 
     /// Create a new session for a conversation
     ///
-    /// Stores the provider/model binding in Redis with TTL.
+    /// Stores the provider/model/tier binding in Redis with TTL.
     /// The TTL resets on each activity via `touch()`.
-    #[instrument(skip(self), fields(conversation_id = %conversation_id, provider = %provider, model = %model))]
+    #[instrument(skip(self), fields(conversation_id = %conversation_id, provider = %provider, model = %model, tier = ?tier))]
     pub async fn create(
         &self,
         conversation_id: &str,
         provider: &str,
         model: &str,
+        tier: Tier,
         external_id: &str,
     ) -> AppResult<Session> {
         let session = Session {
             id: conversation_id.to_string(),
             provider: provider.to_string(),
             model: model.to_string(),
+            tier,
             external_id: external_id.to_string(),
             created_at: Utc::now().timestamp(),
         };
@@ -156,6 +161,39 @@ impl SessionManager {
 
         debug!("Session created");
         Ok(session)
+    }
+
+    /// Update session tier, provider, and model for tier upgrade
+    ///
+    /// Called when a request in an existing session requests a higher tier.
+    /// Only upgrades are allowed (simple -> moderate -> complex).
+    #[instrument(skip(self), fields(conversation_id = %conversation_id, new_tier = ?new_tier))]
+    pub async fn upgrade_tier(
+        &self,
+        conversation_id: &str,
+        provider: &str,
+        model: &str,
+        new_tier: Tier,
+    ) -> AppResult<()> {
+        let key = keys::session(conversation_id);
+
+        // Get existing session
+        let mut session: Session = self.cache.get::<Session>(&key).await?.ok_or_else(|| {
+            crate::error::AppError::NotFound(format!("Session not found: {}", conversation_id))
+        })?;
+
+        // Update tier, provider, model
+        session.tier = new_tier;
+        session.provider = provider.to_string();
+        session.model = model.to_string();
+
+        // Save back with TTL refresh
+        self.cache
+            .set_with_ttl(&key, &session, self.session_ttl)
+            .await?;
+
+        debug!("Session tier upgraded");
+        Ok(())
     }
 
     /// Refresh session TTL on activity
@@ -186,6 +224,7 @@ mod tests {
             id: "conv-123".to_string(),
             provider: "openai".to_string(),
             model: "gpt-4".to_string(),
+            tier: Tier::Moderate,
             external_id: "user-456".to_string(),
             created_at: 1700000000,
         };
@@ -205,6 +244,7 @@ mod tests {
             id: "test-id".to_string(),
             provider: "anthropic".to_string(),
             model: "claude-3-opus".to_string(),
+            tier: Tier::Complex,
             external_id: "ext-123".to_string(),
             created_at: 1700000000,
         };
@@ -215,6 +255,7 @@ mod tests {
         assert!(json.contains("\"id\":\"test-id\""));
         assert!(json.contains("\"provider\":\"anthropic\""));
         assert!(json.contains("\"model\":\"claude-3-opus\""));
+        assert!(json.contains("\"tier\":\"complex\""));
         assert!(json.contains("\"external_id\":\"ext-123\""));
         assert!(json.contains("\"created_at\":1700000000"));
     }
@@ -225,6 +266,7 @@ mod tests {
             "id": "conv-abc",
             "provider": "openai",
             "model": "gpt-4-turbo",
+            "tier": "moderate",
             "external_id": "user-xyz",
             "created_at": 1700000000
         }"#;
@@ -234,6 +276,7 @@ mod tests {
         assert_eq!(session.id, "conv-abc");
         assert_eq!(session.provider, "openai");
         assert_eq!(session.model, "gpt-4-turbo");
+        assert_eq!(session.tier, Tier::Moderate);
         assert_eq!(session.external_id, "user-xyz");
         assert_eq!(session.created_at, 1700000000);
     }
@@ -244,6 +287,7 @@ mod tests {
             id: "clone-test".to_string(),
             provider: "openai".to_string(),
             model: "gpt-4".to_string(),
+            tier: Tier::Simple,
             external_id: "user-1".to_string(),
             created_at: 1700000000,
         };
@@ -259,6 +303,7 @@ mod tests {
             id: "debug-test".to_string(),
             provider: "openai".to_string(),
             model: "gpt-4".to_string(),
+            tier: Tier::Simple,
             external_id: "user-1".to_string(),
             created_at: 1700000000,
         };
@@ -268,6 +313,7 @@ mod tests {
         assert!(debug_str.contains("Session"));
         assert!(debug_str.contains("debug-test"));
         assert!(debug_str.contains("openai"));
+        assert!(debug_str.contains("Simple"));
     }
 
     // ===========================================
@@ -311,6 +357,7 @@ mod tests {
             id: "conv_550e8400-e29b-41d4-a716-446655440000".to_string(),
             provider: "openai".to_string(),
             model: "gpt-4o-2024-05-13".to_string(),
+            tier: Tier::Moderate,
             external_id: "user@example.com".to_string(),
             created_at: 1700000000,
         };
@@ -328,6 +375,7 @@ mod tests {
             id: "".to_string(),
             provider: "".to_string(),
             model: "".to_string(),
+            tier: Tier::Simple,
             external_id: "".to_string(),
             created_at: 0,
         };
@@ -345,6 +393,7 @@ mod tests {
             id: "conv-unicode".to_string(),
             provider: "custom".to_string(),
             model: "model-name".to_string(),
+            tier: Tier::Complex,
             external_id: "user-unicode".to_string(),
             created_at: 1700000000,
         };
@@ -362,6 +411,7 @@ mod tests {
             id: "epoch".to_string(),
             provider: "openai".to_string(),
             model: "gpt-4".to_string(),
+            tier: Tier::Simple,
             external_id: "user".to_string(),
             created_at: 0,
         };
@@ -371,6 +421,7 @@ mod tests {
             id: "future".to_string(),
             provider: "openai".to_string(),
             model: "gpt-4".to_string(),
+            tier: Tier::Simple,
             external_id: "user".to_string(),
             created_at: i64::MAX,
         };
@@ -381,5 +432,25 @@ mod tests {
 
         let _: Session = serde_json::from_str(&json_epoch).unwrap();
         let _: Session = serde_json::from_str(&json_future).unwrap();
+    }
+
+    #[test]
+    fn test_session_with_tier_serializes_correctly() {
+        // Test all tier variants in session
+        for tier in [Tier::Simple, Tier::Moderate, Tier::Complex] {
+            let session = Session {
+                id: format!("test-{:?}", tier).to_lowercase(),
+                provider: "openai".to_string(),
+                model: "gpt-4".to_string(),
+                tier,
+                external_id: "user-1".to_string(),
+                created_at: 1700000000,
+            };
+
+            let json = serde_json::to_string(&session).unwrap();
+            let deserialized: Session = serde_json::from_str(&json).unwrap();
+
+            assert_eq!(session.tier, deserialized.tier);
+        }
     }
 }
