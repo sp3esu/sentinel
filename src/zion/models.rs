@@ -183,6 +183,60 @@ pub struct UserProfileResponse {
     pub data: UserProfile,
 }
 
+// ===========================================
+// Tier Configuration Types
+// ===========================================
+
+/// Model configuration for a single provider/model combination
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfig {
+    /// Provider name (e.g., "openai", "anthropic")
+    pub provider: String,
+    /// Model identifier (e.g., "gpt-4o-mini", "gpt-4o")
+    pub model: String,
+    /// Relative cost score (1-10, lower is cheaper)
+    /// Used for weighted selection - lower cost = higher probability
+    /// Must be >= 1 to avoid division by zero in weight calculation
+    pub relative_cost: u8,
+    /// Input token price per million (for cost reporting)
+    pub input_price_per_million: f64,
+    /// Output token price per million (for cost reporting)
+    pub output_price_per_million: f64,
+}
+
+/// Tier-to-model mapping configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TierMapping {
+    /// Models available for simple tier
+    pub simple: Vec<ModelConfig>,
+    /// Models available for moderate tier
+    pub moderate: Vec<ModelConfig>,
+    /// Models available for complex tier
+    pub complex: Vec<ModelConfig>,
+}
+
+/// Tier configuration data from Zion
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TierConfigData {
+    /// Config version for cache invalidation
+    pub version: String,
+    /// When this config was last updated
+    pub updated_at: String,
+    /// Tier-to-model mappings
+    pub tiers: TierMapping,
+}
+
+/// Response wrapper from tier config endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierConfigResponse {
+    pub success: bool,
+    pub data: TierConfigData,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1041,5 +1095,193 @@ mod tests {
         let debug_str = format!("{:?}", profile);
         assert!(debug_str.contains("UserProfile"));
         assert!(debug_str.contains("user_123"));
+    }
+
+    // ===========================================
+    // Tier Configuration Tests
+    // ===========================================
+
+    #[test]
+    fn test_model_config_serialization_roundtrip() {
+        let config = ModelConfig {
+            provider: "openai".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            relative_cost: 1,
+            input_price_per_million: 0.15,
+            output_price_per_million: 0.60,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: ModelConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(config, deserialized);
+        assert_eq!(deserialized.provider, "openai");
+        assert_eq!(deserialized.model, "gpt-4o-mini");
+        assert_eq!(deserialized.relative_cost, 1);
+    }
+
+    #[test]
+    fn test_model_config_camel_case_serialization() {
+        let config = ModelConfig {
+            provider: "anthropic".to_string(),
+            model: "claude-3-5-sonnet".to_string(),
+            relative_cost: 5,
+            input_price_per_million: 3.0,
+            output_price_per_million: 15.0,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"relativeCost\":5"));
+        assert!(json.contains("\"inputPricePerMillion\":3.0"));
+        assert!(json.contains("\"outputPricePerMillion\":15.0"));
+    }
+
+    #[test]
+    fn test_tier_config_data_deserialization() {
+        let json = r#"{
+            "version": "1.0.0",
+            "updatedAt": "2024-01-15T10:30:00Z",
+            "tiers": {
+                "simple": [
+                    {
+                        "provider": "openai",
+                        "model": "gpt-4o-mini",
+                        "relativeCost": 1,
+                        "inputPricePerMillion": 0.15,
+                        "outputPricePerMillion": 0.60
+                    }
+                ],
+                "moderate": [
+                    {
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "relativeCost": 5,
+                        "inputPricePerMillion": 2.50,
+                        "outputPricePerMillion": 10.0
+                    }
+                ],
+                "complex": [
+                    {
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "relativeCost": 5,
+                        "inputPricePerMillion": 2.50,
+                        "outputPricePerMillion": 10.0
+                    },
+                    {
+                        "provider": "anthropic",
+                        "model": "claude-3-5-sonnet",
+                        "relativeCost": 6,
+                        "inputPricePerMillion": 3.0,
+                        "outputPricePerMillion": 15.0
+                    }
+                ]
+            }
+        }"#;
+
+        let config: TierConfigData = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.version, "1.0.0");
+        assert_eq!(config.updated_at, "2024-01-15T10:30:00Z");
+        assert_eq!(config.tiers.simple.len(), 1);
+        assert_eq!(config.tiers.moderate.len(), 1);
+        assert_eq!(config.tiers.complex.len(), 2);
+
+        // Check simple tier
+        assert_eq!(config.tiers.simple[0].provider, "openai");
+        assert_eq!(config.tiers.simple[0].model, "gpt-4o-mini");
+        assert_eq!(config.tiers.simple[0].relative_cost, 1);
+
+        // Check complex tier has multiple models
+        assert_eq!(config.tiers.complex[0].provider, "openai");
+        assert_eq!(config.tiers.complex[1].provider, "anthropic");
+    }
+
+    #[test]
+    fn test_tier_config_response_deserialization() {
+        let json = r#"{
+            "success": true,
+            "data": {
+                "version": "1.0.0",
+                "updatedAt": "2024-01-15T10:30:00Z",
+                "tiers": {
+                    "simple": [],
+                    "moderate": [],
+                    "complex": []
+                }
+            }
+        }"#;
+
+        let response: TierConfigResponse = serde_json::from_str(json).unwrap();
+        assert!(response.success);
+        assert_eq!(response.data.version, "1.0.0");
+    }
+
+    #[test]
+    fn test_tier_config_data_roundtrip() {
+        let original = TierConfigData {
+            version: "2.0.0".to_string(),
+            updated_at: "2024-06-01T00:00:00Z".to_string(),
+            tiers: TierMapping {
+                simple: vec![
+                    ModelConfig {
+                        provider: "openai".to_string(),
+                        model: "gpt-4o-mini".to_string(),
+                        relative_cost: 1,
+                        input_price_per_million: 0.15,
+                        output_price_per_million: 0.60,
+                    },
+                ],
+                moderate: vec![
+                    ModelConfig {
+                        provider: "openai".to_string(),
+                        model: "gpt-4o".to_string(),
+                        relative_cost: 5,
+                        input_price_per_million: 2.50,
+                        output_price_per_million: 10.0,
+                    },
+                ],
+                complex: vec![],
+            },
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: TierConfigData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_model_config_relative_cost_must_be_positive() {
+        // Document that relative_cost should be >= 1 to avoid division by zero
+        // The weight calculation uses 1.0 / relative_cost
+        let json = r#"{
+            "provider": "openai",
+            "model": "gpt-4o",
+            "relativeCost": 0,
+            "inputPricePerMillion": 2.50,
+            "outputPricePerMillion": 10.0
+        }"#;
+
+        // Deserialization succeeds, but callers must validate relative_cost >= 1
+        // This test documents the constraint
+        let config: ModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.relative_cost, 0);
+        // NOTE: TierRouter must validate relative_cost >= 1 before use
+    }
+
+    #[test]
+    fn test_tier_mapping_empty_tiers_valid() {
+        // Empty tier arrays are valid (means no models available for that tier)
+        let json = r#"{
+            "simple": [],
+            "moderate": [],
+            "complex": []
+        }"#;
+
+        let mapping: TierMapping = serde_json::from_str(json).unwrap();
+        assert!(mapping.simple.is_empty());
+        assert!(mapping.moderate.is_empty());
+        assert!(mapping.complex.is_empty());
     }
 }
