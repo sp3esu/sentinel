@@ -73,16 +73,18 @@ Plans:
 **Requirements**: TIER-01, TIER-02, TIER-03, TIER-04, TIER-05, TIER-06
 **Success Criteria** (what must be TRUE):
   1. API accepts tier (simple | moderate | complex) and selects appropriate model
-  2. Model configuration loads from Zion API with caching
-  3. Fallback configuration used when Zion unavailable
-  4. Provider selection prefers cheaper option when multiple available for tier
-  5. Unavailable providers (rate limited, down) are skipped in selection
-**Plans**: TBD
+  2. Model configuration loads from Zion API with caching (30-min TTL)
+  3. Return 503 error when Zion unavailable AND cache empty (fail explicit)
+  4. Provider selection uses cost-weighted probabilistic algorithm (favor cheaper)
+  5. Unavailable providers skipped with exponential backoff (30s initial, 5min max)
+  6. Session tier can upgrade (simple->moderate->complex) but not downgrade
+**Plans**: 4 plans in 2 waves
 
 Plans:
-- [ ] 04-01: Tier configuration and Zion integration
-- [ ] 04-02: Provider selection logic with cost awareness
-- [ ] 04-03: Availability checking and fallback handling
+- [ ] 04-01-PLAN.md - Foundation types: Tier enum, config types, request field (Wave 1)
+- [ ] 04-01b-PLAN.md - Zion integration: get_tier_config, TierConfigCache, caching (Wave 1)
+- [ ] 04-02-PLAN.md - Selection: TierRouter, cost-weighted selection, health tracking (Wave 1)
+- [ ] 04-03-PLAN.md - Integration: Handler wiring, session tier, observability, tests (Wave 2)
 
 ### Phase 5: Tool Calling
 **Goal**: Support function/tool calling through unified schema with provider translation
@@ -126,10 +128,10 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 1. Types and Translation | 4/4 | Complete | 2026-01-31 |
 | 2. API Endpoints | 2/2 | Complete | 2026-02-01 |
 | 3. Session Management | 2/2 | Complete | 2026-02-01 |
-| 4. Tier Routing | 0/3 | Not started | - |
+| 4. Tier Routing | 0/4 | Planned | - |
 | 5. Tool Calling | 0/3 | Not started | - |
 | 6. Documentation | 0/2 | Not started | - |
 
 ---
 *Roadmap created: 2026-01-31*
-*Total: 6 phases, 16 plans, 32 requirements*
+*Total: 6 phases, 17 plans, 32 requirements*
