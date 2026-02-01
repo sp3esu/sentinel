@@ -112,11 +112,11 @@ Plans:
   2. GET /native/docs returns the specification
   3. Docs endpoint requires dedicated API key (not JWT)
   4. Specification includes all request/response schemas with examples
-**Plans**: TBD
+**Plans**: 2 plans in 2 waves
 
 Plans:
-- [ ] 06-01: OpenAPI spec generation with utoipa
-- [ ] 06-02: Docs endpoint with API key protection
+- [ ] 06-01-PLAN.md - OpenAPI spec generation with utoipa (Wave 1)
+- [ ] 06-02-PLAN.md - Docs endpoint with API key protection (Wave 2)
 
 ## Progress
 
