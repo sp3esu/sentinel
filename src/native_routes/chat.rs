@@ -101,21 +101,68 @@ pub async fn native_chat_completions(
         NativeErrorResponse::validation(format!("Invalid request body: {}", e))
     })?;
 
-    // Phase 2: model field is required
-    // Phase 4 will make this optional via tier routing
-    let model = native_request.model.clone().ok_or_else(|| {
-        NativeErrorResponse::validation(
-            "model field is required. Phase 4 will enable tier-based model routing.",
-        )
-    })?;
+    // Session handling: use stored provider/model or create new session
+    let (provider, model) = if let Some(ref conv_id) = native_request.conversation_id {
+        // Try to get existing session
+        if let Some(session) = state.session_manager.get(conv_id).await.map_err(|e| {
+            NativeErrorResponse::internal(format!("Session lookup failed: {}", e))
+        })? {
+            // Refresh TTL on activity (fire-and-forget, log errors)
+            if let Err(e) = state.session_manager.touch(conv_id).await {
+                warn!(conversation_id = %conv_id, error = %e, "Failed to refresh session TTL");
+            }
+
+            // Log if request model differs from session model (for debugging)
+            if let Some(ref req_model) = native_request.model {
+                if req_model != &session.model {
+                    debug!(
+                        conversation_id = %conv_id,
+                        session_model = %session.model,
+                        request_model = %req_model,
+                        "Request model differs from session model - using session model"
+                    );
+                }
+            }
+
+            (session.provider, session.model)
+        } else {
+            // Session expired or never existed - create new session
+            // Phase 3: model required, provider hardcoded to openai
+            // Phase 4: tier routing will determine provider/model
+            let model = native_request.model.clone().ok_or_else(|| {
+                NativeErrorResponse::validation(
+                    "model field is required for new sessions. Phase 4 will enable tier-based routing.",
+                )
+            })?;
+            let provider = "openai".to_string();
+
+            // Store new session
+            state.session_manager.create(conv_id, &provider, &model, &user.external_id)
+                .await
+                .map_err(|e| NativeErrorResponse::internal(format!("Session creation failed: {}", e)))?;
+
+            info!(conversation_id = %conv_id, model = %model, "Created new session");
+            (provider, model)
+        }
+    } else {
+        // No conversation_id - fresh selection each time (stateless mode)
+        let model = native_request.model.clone().ok_or_else(|| {
+            NativeErrorResponse::validation(
+                "model field is required. Phase 4 will enable tier-based model routing.",
+            )
+        })?;
+        ("openai".to_string(), model)
+    };
 
     let is_streaming = native_request.stream;
 
     info!(
         model = %model,
+        provider = %provider,
         stream = %is_streaming,
         messages = %native_request.messages.len(),
         external_id = %user.external_id,
+        conversation_id = ?native_request.conversation_id,
         "Processing native chat completion request"
     );
 
