@@ -50,6 +50,35 @@ fn validate_message_order(messages: &[Message]) -> Result<(), TranslationError> 
     Ok(())
 }
 
+/// Find function name for a tool_call_id by searching conversation history.
+///
+/// Searches backwards through messages for an assistant message containing
+/// tool_calls with a matching tool_call_id, then extracts the function name
+/// from that tool_call.
+///
+/// This is needed because OpenAI's tool message format requires a `name` field,
+/// but our unified format doesn't store the name on tool result messages.
+fn find_function_name_for_tool_call(
+    messages: &[Message],
+    tool_call_id: &str,
+    current_index: usize,
+) -> Option<String> {
+    // Search backwards from current_index
+    for i in (0..current_index).rev() {
+        let msg = &messages[i];
+        if msg.role == Role::Assistant {
+            if let Some(ref tool_calls) = msg.tool_calls {
+                for tc in tool_calls {
+                    if tc.id == tool_call_id {
+                        return Some(tc.function.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 impl MessageTranslator for OpenAITranslator {
     fn translate_request(
         &self,
@@ -58,11 +87,42 @@ impl MessageTranslator for OpenAITranslator {
         // Validate message ordering
         validate_message_order(&request.messages)?;
 
+        // Transform messages for OpenAI format
+        // Most messages serialize directly, but Tool messages need function name lookup
+        let mut translated_messages = Vec::with_capacity(request.messages.len());
+        for (idx, msg) in request.messages.iter().enumerate() {
+            if msg.role == Role::Tool {
+                // Tool message needs function name from history
+                let tool_call_id = msg.tool_call_id.as_ref().ok_or_else(|| {
+                    TranslationError::MissingRequiredField(
+                        "tool_call_id is required for tool messages".to_string(),
+                    )
+                })?;
+
+                let function_name =
+                    find_function_name_for_tool_call(&request.messages, tool_call_id, idx)
+                        .ok_or_else(|| {
+                            TranslationError::MissingToolCallInHistory(tool_call_id.clone())
+                        })?;
+
+                // Build OpenAI tool message format with name field
+                let content_str = msg.content.as_text();
+                translated_messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": function_name,
+                    "content": content_str
+                }));
+            } else {
+                // Other message types serialize directly
+                translated_messages.push(serde_json::to_value(msg)?);
+            }
+        }
+
         // Build the request JSON
-        // Since Native API is OpenAI-compatible, we can serialize messages directly
         // Note: model is not included here - it's injected by the handler after tier routing
         let mut obj = json!({
-            "messages": request.messages,
+            "messages": translated_messages,
         });
 
         // Add optional fields if present
@@ -1086,5 +1146,252 @@ mod tests {
         assert!(tool_calls[0].function.arguments.is_object());
         assert_eq!(tool_calls[0].function.arguments["query"], "rust programming");
         assert_eq!(tool_calls[0].function.arguments["limit"], 10);
+    }
+
+    // =============================================================================
+    // Tool Result Request Translation Tests
+    // =============================================================================
+
+    #[test]
+    fn test_translate_request_with_tool_result_message() {
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![
+                make_message(Role::User, "What's the weather in London?"),
+                Message {
+                    role: Role::Assistant,
+                    content: Content::Text("".to_string()),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_abc123".to_string(),
+                        call_type: "function".to_string(),
+                        function: ToolCallFunction {
+                            name: "get_weather".to_string(),
+                            arguments: json!({"location": "London"}),
+                        },
+                    }]),
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Content::Text("The weather in London is sunny, 22C".to_string()),
+                    name: None,
+                    tool_call_id: Some("call_abc123".to_string()),
+                    tool_calls: None,
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request).unwrap();
+        let messages = result.get("messages").unwrap().as_array().unwrap();
+
+        assert_eq!(messages.len(), 3);
+
+        // Check the tool result message has the name field
+        let tool_msg = &messages[2];
+        assert_eq!(tool_msg["role"], "tool");
+        assert_eq!(tool_msg["tool_call_id"], "call_abc123");
+        assert_eq!(tool_msg["name"], "get_weather");
+        assert_eq!(tool_msg["content"], "The weather in London is sunny, 22C");
+    }
+
+    #[test]
+    fn test_translate_request_tool_result_not_found_in_history() {
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![
+                make_message(Role::User, "Hi"),
+                Message {
+                    role: Role::Tool,
+                    content: Content::Text("Some result".to_string()),
+                    name: None,
+                    tool_call_id: Some("call_nonexistent".to_string()),
+                    tool_calls: None,
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request);
+        assert!(matches!(
+            result,
+            Err(TranslationError::MissingToolCallInHistory(id)) if id == "call_nonexistent"
+        ));
+    }
+
+    #[test]
+    fn test_translate_request_tool_message_missing_tool_call_id() {
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![
+                make_message(Role::User, "Hi"),
+                Message {
+                    role: Role::Tool,
+                    content: Content::Text("Some result".to_string()),
+                    name: None,
+                    tool_call_id: None, // Missing tool_call_id
+                    tool_calls: None,
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request);
+        assert!(matches!(
+            result,
+            Err(TranslationError::MissingRequiredField(msg)) if msg.contains("tool_call_id")
+        ));
+    }
+
+    #[test]
+    fn test_translate_request_multiple_tool_results() {
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![
+                make_message(Role::User, "What's the weather and time?"),
+                Message {
+                    role: Role::Assistant,
+                    content: Content::Text("".to_string()),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: Some(vec![
+                        ToolCall {
+                            id: "call_weather".to_string(),
+                            call_type: "function".to_string(),
+                            function: ToolCallFunction {
+                                name: "get_weather".to_string(),
+                                arguments: json!({"location": "NYC"}),
+                            },
+                        },
+                        ToolCall {
+                            id: "call_time".to_string(),
+                            call_type: "function".to_string(),
+                            function: ToolCallFunction {
+                                name: "get_time".to_string(),
+                                arguments: json!({"timezone": "EST"}),
+                            },
+                        },
+                    ]),
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Content::Text("Sunny, 25C".to_string()),
+                    name: None,
+                    tool_call_id: Some("call_weather".to_string()),
+                    tool_calls: None,
+                },
+                Message {
+                    role: Role::Tool,
+                    content: Content::Text("3:00 PM".to_string()),
+                    name: None,
+                    tool_call_id: Some("call_time".to_string()),
+                    tool_calls: None,
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request).unwrap();
+        let messages = result.get("messages").unwrap().as_array().unwrap();
+
+        assert_eq!(messages.len(), 4);
+
+        // First tool result
+        let tool_msg1 = &messages[2];
+        assert_eq!(tool_msg1["name"], "get_weather");
+        assert_eq!(tool_msg1["tool_call_id"], "call_weather");
+        assert_eq!(tool_msg1["content"], "Sunny, 25C");
+
+        // Second tool result
+        let tool_msg2 = &messages[3];
+        assert_eq!(tool_msg2["name"], "get_time");
+        assert_eq!(tool_msg2["tool_call_id"], "call_time");
+        assert_eq!(tool_msg2["content"], "3:00 PM");
+    }
+
+    #[test]
+    fn test_translate_request_tool_result_with_json_content() {
+        use crate::native::types::ContentPart;
+
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![
+                make_message(Role::User, "Search for something"),
+                Message {
+                    role: Role::Assistant,
+                    content: Content::Text("".to_string()),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: Some(vec![ToolCall {
+                        id: "call_search".to_string(),
+                        call_type: "function".to_string(),
+                        function: ToolCallFunction {
+                            name: "search".to_string(),
+                            arguments: json!({"query": "test"}),
+                        },
+                    }]),
+                },
+                Message {
+                    role: Role::Tool,
+                    // Content parts with text (will be joined)
+                    content: Content::Parts(vec![
+                        ContentPart::Text { text: "Result: ".to_string() },
+                        ContentPart::Text { text: "found it!".to_string() },
+                    ]),
+                    name: None,
+                    tool_call_id: Some("call_search".to_string()),
+                    tool_calls: None,
+                },
+            ],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request).unwrap();
+        let messages = result.get("messages").unwrap().as_array().unwrap();
+
+        let tool_msg = &messages[2];
+        assert_eq!(tool_msg["name"], "search");
+        assert_eq!(tool_msg["content"], "Result: found it!");
     }
 }
