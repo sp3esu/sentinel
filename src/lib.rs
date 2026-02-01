@@ -6,6 +6,7 @@
 
 pub mod cache;
 pub mod config;
+pub mod docs;
 pub mod error;
 pub mod middleware;
 pub mod native;
