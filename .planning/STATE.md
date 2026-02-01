@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-01-31)
 ## Current Position
 
 Phase: 4 of 6 (Tier Routing)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-02-01 - Phase 3 verified and complete
+Plan: 1 of 3 in current phase
+Status: In progress
+Last activity: 2026-02-01 - Completed 04-01-PLAN.md (Foundation Types)
 
-Progress: [==========          ] 50%
+Progress: [===========         ] 55%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 8
+- Total plans completed: 9
 - Average duration: 5 min
-- Total execution time: 38 min
+- Total execution time: 44 min
 
 **By Phase:**
 
@@ -30,9 +30,10 @@ Progress: [==========          ] 50%
 | 01-types-and-translation | 4 | 19 min | 5 min |
 | 02-api-endpoints | 2 | 7 min | 4 min |
 | 03-session-management | 2 | 12 min | 6 min |
+| 04-tier-routing | 1 | 6 min | 6 min |
 
 **Recent Trend:**
-- Last 5 plans: 02-01 (4min), 02-02 (3min), 03-01 (4min), 03-02 (8min)
+- Last 5 plans: 02-02 (3min), 03-01 (4min), 03-02 (8min), 04-01 (6min)
 - Trend: Steady at 4-8 min
 
 *Updated after each plan completion*
@@ -66,6 +67,13 @@ Recent decisions affecting current work:
 | Activity-based TTL refresh | 03-01 | touch() refreshes TTL on each request, not fixed from creation |
 | Session model takes precedence | 03-02 | Session model overrides request model for stickiness |
 | SessionCacheBackend abstraction | 03-02 | Redis/InMemory enum follows SubscriptionCache pattern |
+| Tier enum with ordering | 04-01 | PartialOrd enables upgrade-only session logic |
+| Replace model with tier | 04-01 | Native API uses tier abstraction, not direct model names |
+| Model injection pattern | 04-01 | Handler determines model, injected into provider request |
+| Temporary tier mapping | 04-01 | Hardcoded tier->model until TierRouter in Plan 02/03 |
+| Cost-weighted selection | 04-02 | Probabilistic selection favors cheaper models |
+| Exponential backoff for health | 04-02 | 30s initial, 2x multiplier, 5min max per decisions |
+| Fail explicit when Zion unavailable | 04-03 | Return 503, don't use hardcoded fallback per decisions |
 
 ### Pending Todos
 
@@ -78,5 +86,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-01
-Stopped at: Phase 3 verified and complete
-Resume file: None
+Stopped at: Completed 04-01-PLAN.md (Foundation Types)
+Resume file: .planning/phases/04-tier-routing/04-02-PLAN.md
