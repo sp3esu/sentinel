@@ -351,6 +351,7 @@ impl TokenTrackingTestHarness {
             cache_ttl_seconds: 60,
             jwt_cache_ttl_seconds: 60,
             session_ttl_seconds: 86400, // 24 hours for session stickiness
+            tier_config_ttl_seconds: 60, // 1 minute for tests
             debug_enabled: false,
         };
 

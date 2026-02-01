@@ -48,6 +48,7 @@ impl DebugTestHarness {
             cache_ttl_seconds: 60,
             jwt_cache_ttl_seconds: 60,
             session_ttl_seconds: 86400,
+            tier_config_ttl_seconds: 60,
             debug_enabled,
         };
 

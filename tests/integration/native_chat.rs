@@ -2,9 +2,10 @@
 //!
 //! Tests for the native chat completions endpoint:
 //! - POST /native/v1/chat/completions - Chat completions in Native API format
-//! - Request validation (missing model, unknown fields)
+//! - Request validation (tier, unknown fields)
 //! - Streaming response format
 //! - Error response format (NativeErrorResponse)
+//! - Tier routing integration
 //!
 //! These tests verify that the Native API endpoints work correctly alongside
 //! the existing /v1/* endpoints without breaking them.
@@ -57,20 +58,21 @@ async fn test_native_chat_completions_non_streaming() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
         .mock_chat_completion_with_usage("Hello! How can I help you today?", 15, 25)
         .await;
 
-    // Send request with stream: false (explicit)
+    // Send request with tier: moderate and stream: false
     let response = harness
         .server
         .post("/native/v1/chat/completions")
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
+            "tier": "moderate",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ],
@@ -79,6 +81,16 @@ async fn test_native_chat_completions_non_streaming() {
         .await;
 
     response.assert_status_ok();
+
+    // Verify X-Sentinel-* headers
+    assert!(
+        response.headers().get("X-Sentinel-Model").is_some(),
+        "Should have X-Sentinel-Model header"
+    );
+    assert!(
+        response.headers().get("X-Sentinel-Tier").is_some(),
+        "Should have X-Sentinel-Tier header"
+    );
 
     // Verify response structure
     let body: serde_json::Value = response.json();
@@ -125,20 +137,20 @@ async fn test_native_chat_completions_default_non_streaming() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
         .mock_chat_completion_with_usage("Hello!", 10, 5)
         .await;
 
-    // Send request without stream field (should default to false)
+    // Send request without tier/stream fields (tier defaults to simple, stream to false)
     let response = harness
         .server
         .post("/native/v1/chat/completions")
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ]
@@ -146,6 +158,11 @@ async fn test_native_chat_completions_default_non_streaming() {
         .await;
 
     response.assert_status_ok();
+
+    // Verify tier defaults to simple
+    let tier_header = response.headers().get("X-Sentinel-Tier");
+    assert!(tier_header.is_some(), "Should have X-Sentinel-Tier header");
+    assert_eq!(tier_header.unwrap().to_str().unwrap(), "simple");
 
     let body: serde_json::Value = response.json();
     assert!(body.get("choices").is_some());
@@ -165,6 +182,7 @@ async fn test_native_chat_completions_with_system_message() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
@@ -178,7 +196,7 @@ async fn test_native_chat_completions_with_system_message() {
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
+            "tier": "moderate",
             "messages": [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": "Who are you?"}
@@ -197,7 +215,7 @@ async fn test_native_chat_completions_with_system_message() {
 // =============================================================================
 
 #[tokio::test]
-async fn test_native_chat_completions_missing_model() {
+async fn test_native_chat_completions_invalid_tier() {
     let harness = TokenTrackingTestHarness::new().await;
 
     // Set up auth mock (needed before validation)
@@ -210,13 +228,14 @@ async fn test_native_chat_completions_missing_model() {
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
 
-    // Send request without model field (required in Phase 2)
+    // Send request with invalid tier value
     let response = harness
         .server
         .post("/native/v1/chat/completions")
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
+            "tier": "invalid_tier",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ]
@@ -241,13 +260,6 @@ async fn test_native_chat_completions_missing_model() {
         "invalid_request_error",
         "Error type should be 'invalid_request_error'"
     );
-
-    // Verify message mentions model
-    let message = error.get("message").unwrap().as_str().unwrap();
-    assert!(
-        message.to_lowercase().contains("model"),
-        "Error message should mention 'model'"
-    );
 }
 
 #[tokio::test]
@@ -271,7 +283,7 @@ async fn test_native_chat_completions_unknown_field_rejected() {
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ],
@@ -304,7 +316,7 @@ async fn test_native_chat_completions_unauthorized() {
         .add_header(header::AUTHORIZATION, "Bearer invalid-token".parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ]
@@ -329,7 +341,7 @@ async fn test_native_chat_completions_no_auth_header() {
         .post("/native/v1/chat/completions")
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ]
@@ -356,6 +368,7 @@ async fn test_native_chat_completions_streaming() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
 
     // Mock streaming response with usage in final chunk
@@ -369,7 +382,7 @@ async fn test_native_chat_completions_streaming() {
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ],
@@ -391,6 +404,16 @@ async fn test_native_chat_completions_streaming() {
         "Content-Type should be text/event-stream"
     );
 
+    // Verify X-Sentinel-* headers are present in streaming response
+    assert!(
+        response.headers().get("X-Sentinel-Model").is_some(),
+        "Streaming should have X-Sentinel-Model header"
+    );
+    assert!(
+        response.headers().get("X-Sentinel-Tier").is_some(),
+        "Streaming should have X-Sentinel-Tier header"
+    );
+
     // Consume the stream and verify format
     let body = response.text();
     assert!(body.contains("data:"), "Response should be SSE format");
@@ -410,6 +433,7 @@ async fn test_native_chat_completions_streaming_usage_tracked() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
 
     // Mock streaming response with usage
@@ -423,7 +447,7 @@ async fn test_native_chat_completions_streaming_usage_tracked() {
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
+            "tier": "moderate",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ],
@@ -506,6 +530,7 @@ async fn test_v1_endpoints_regression_check() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
@@ -518,7 +543,7 @@ async fn test_v1_endpoints_regression_check() {
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
+            "tier": "simple",
             "messages": [{"role": "user", "content": "World"}]
         }))
         .await;
@@ -554,6 +579,7 @@ async fn test_session_creation_and_retrieval() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
@@ -567,7 +593,7 @@ async fn test_session_creation_and_retrieval() {
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4",
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ],
@@ -586,6 +612,7 @@ async fn test_session_creation_and_retrieval() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
@@ -593,14 +620,13 @@ async fn test_session_creation_and_retrieval() {
         .await;
 
     // Second request with same conversation_id reuses session
-    // Note: Model is still required in the request but session model takes precedence
     let response2 = harness
         .server
         .post("/native/v1/chat/completions")
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4",
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"},
                 {"role": "assistant", "content": "Hello! I'm here to help."},
@@ -619,12 +645,12 @@ async fn test_session_creation_and_retrieval() {
     assert!(body2.get("choices").is_some());
 }
 
-/// Test that session model takes precedence over request model (stickiness)
+/// Test that session tier cannot be downgraded (stickiness)
 #[tokio::test]
-async fn test_session_model_stickiness() {
+async fn test_session_tier_downgrade_prevented() {
     let harness = TokenTrackingTestHarness::new().await;
 
-    // Set up mocks for first request (creates session with gpt-4)
+    // Set up mocks for first request (creates session with moderate tier)
     harness
         .zion
         .mock_get_user_profile_success(make_test_profile())
@@ -633,20 +659,21 @@ async fn test_session_model_stickiness() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
-        .mock_chat_completion_with_usage("Response from gpt-4", 10, 15)
+        .mock_chat_completion_with_usage("Response from moderate tier", 10, 15)
         .await;
 
-    // First request creates session with gpt-4
+    // First request creates session with moderate tier
     let response1 = harness
         .server
         .post("/native/v1/chat/completions")
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4",
+            "tier": "moderate",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ],
@@ -656,8 +683,13 @@ async fn test_session_model_stickiness() {
 
     response1.assert_status_ok();
 
+    // Verify first response has moderate tier
+    let tier1 = response1.headers().get("X-Sentinel-Tier")
+        .expect("Should have X-Sentinel-Tier header")
+        .to_str().unwrap();
+    assert_eq!(tier1, "moderate");
+
     // Set up mocks for second request
-    // The mock doesn't validate model, but the handler should use session model (gpt-4)
     harness
         .zion
         .mock_get_user_profile_success(make_test_profile())
@@ -666,31 +698,38 @@ async fn test_session_model_stickiness() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
-        .mock_chat_completion_with_usage("Still using gpt-4 from session", 15, 20)
+        .mock_chat_completion_with_usage("Still using moderate tier from session", 15, 20)
         .await;
 
-    // Second request tries to use gpt-3.5-turbo but session should override
+    // Second request tries to use simple tier but session should use moderate
     let response2 = harness
         .server
         .post("/native/v1/chat/completions")
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-3.5-turbo",
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"},
-                {"role": "assistant", "content": "Response from gpt-4"},
+                {"role": "assistant", "content": "Response from moderate tier"},
                 {"role": "user", "content": "Continue"}
             ],
             "conversation_id": "test-session-2"
         }))
         .await;
 
-    // Request should succeed - session model (gpt-4) is used instead of request model
+    // Request should succeed - session tier (moderate) is used, not requested simple
     response2.assert_status_ok();
+
+    // Verify session tier was preserved (downgrade prevented)
+    let tier2 = response2.headers().get("X-Sentinel-Tier")
+        .expect("Should have X-Sentinel-Tier header")
+        .to_str().unwrap();
+    assert_eq!(tier2, "moderate", "Tier downgrade should be prevented");
 
     let body: serde_json::Value = response2.json();
     assert!(body.get("choices").is_some());
@@ -710,6 +749,7 @@ async fn test_no_conversation_id_stateless() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
@@ -723,7 +763,7 @@ async fn test_no_conversation_id_stateless() {
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4",
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ]
@@ -741,6 +781,7 @@ async fn test_no_conversation_id_stateless() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
@@ -754,7 +795,7 @@ async fn test_no_conversation_id_stateless() {
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-3.5-turbo",
+            "tier": "moderate",
             "messages": [
                 {"role": "user", "content": "World!"}
             ]
@@ -770,9 +811,9 @@ async fn test_no_conversation_id_stateless() {
     assert!(body2.get("choices").is_some());
 }
 
-/// Test backward compatibility - existing requests without conversation_id still work
+/// Test backward compatibility - tier defaults to simple when omitted
 #[tokio::test]
-async fn test_conversation_id_backward_compatible() {
+async fn test_tier_defaults_to_simple() {
     let harness = TokenTrackingTestHarness::new().await;
 
     // Set up mocks
@@ -784,20 +825,20 @@ async fn test_conversation_id_backward_compatible() {
         .zion
         .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
         .await;
+    harness.zion.mock_tier_config_success().await;
     harness.zion.mock_batch_increment_success(1, 0).await;
     harness
         .openai
-        .mock_chat_completion_with_usage("Backward compatible response", 10, 15)
+        .mock_chat_completion_with_usage("Response with default tier", 10, 15)
         .await;
 
-    // Request in the old format (without conversation_id) should still work
+    // Request without tier field should default to simple
     let response = harness
         .server
         .post("/native/v1/chat/completions")
         .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
         .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
         .json(&json!({
-            "model": "gpt-4o",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ],
@@ -808,7 +849,101 @@ async fn test_conversation_id_backward_compatible() {
 
     response.assert_status_ok();
 
+    // Verify tier defaults to simple
+    let tier = response.headers().get("X-Sentinel-Tier")
+        .expect("Should have X-Sentinel-Tier header")
+        .to_str().unwrap();
+    assert_eq!(tier, "simple", "Tier should default to simple");
+
     let body: serde_json::Value = response.json();
     assert!(body.get("choices").is_some());
     assert!(body.get("usage").is_some());
+}
+
+/// Test session tier upgrade works (simple -> moderate)
+#[tokio::test]
+async fn test_session_tier_upgrade() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up mocks for first request (creates session with simple tier)
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("Response from simple tier", 10, 15)
+        .await;
+
+    // First request creates session with simple tier
+    let response1 = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "tier": "simple",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "conversation_id": "test-session-upgrade"
+        }))
+        .await;
+
+    response1.assert_status_ok();
+    assert_eq!(
+        response1.headers().get("X-Sentinel-Tier").unwrap().to_str().unwrap(),
+        "simple"
+    );
+
+    // Set up mocks for second request (upgrade to moderate)
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("Response from moderate tier", 15, 20)
+        .await;
+
+    // Second request upgrades tier to moderate
+    let response2 = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "tier": "moderate",
+            "messages": [
+                {"role": "user", "content": "Hello!"},
+                {"role": "assistant", "content": "Response from simple tier"},
+                {"role": "user", "content": "Need more complex answer"}
+            ],
+            "conversation_id": "test-session-upgrade"
+        }))
+        .await;
+
+    response2.assert_status_ok();
+
+    // Verify tier was upgraded
+    assert_eq!(
+        response2.headers().get("X-Sentinel-Tier").unwrap().to_str().unwrap(),
+        "moderate",
+        "Tier should be upgraded to moderate"
+    );
+
+    let body: serde_json::Value = response2.json();
+    assert!(body.get("choices").is_some());
 }

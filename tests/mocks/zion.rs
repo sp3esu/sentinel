@@ -351,6 +351,57 @@ impl MockZionServer {
             .mount(&self.server)
             .await;
     }
+
+    // =========================================================================
+    // GET /api/v1/tiers/config - Tier Configuration
+    // =========================================================================
+
+    /// Mock successful tier config response with default configuration
+    pub async fn mock_tier_config_success(&self) {
+        let response = TierConfigResponseMock {
+            success: true,
+            data: ZionTestData::default_tier_config(),
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/tiers/config"))
+            .and(header_exists("x-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Mock successful tier config response with custom configuration
+    pub async fn mock_tier_config_success_with(&self, config: TierConfigDataMock) {
+        let response = TierConfigResponseMock {
+            success: true,
+            data: config,
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/tiers/config"))
+            .and(header_exists("x-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Mock 500 error for tier config
+    pub async fn mock_tier_config_server_error(&self) {
+        let response = ErrorResponseMock {
+            success: false,
+            error: ErrorDetailMock {
+                code: "INTERNAL_ERROR".to_string(),
+                message: "Failed to fetch tier config".to_string(),
+            },
+        };
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/tiers/config"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(&response))
+            .mount(&self.server)
+            .await;
+    }
 }
 
 // =============================================================================
@@ -533,6 +584,47 @@ pub struct ErrorResponseMock {
 }
 
 // =============================================================================
+// Tier Configuration Mock Types
+// =============================================================================
+
+/// Model configuration for a tier
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfigMock {
+    pub provider: String,
+    pub model: String,
+    pub relative_cost: u8,
+    pub input_price_per_million: f64,
+    pub output_price_per_million: f64,
+}
+
+/// Tier-to-model mapping
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierMappingMock {
+    pub simple: Vec<ModelConfigMock>,
+    pub moderate: Vec<ModelConfigMock>,
+    pub complex: Vec<ModelConfigMock>,
+}
+
+/// Tier configuration data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierConfigDataMock {
+    pub version: String,
+    pub updated_at: String,
+    pub tiers: TierMappingMock,
+}
+
+/// Tier configuration response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierConfigResponseMock {
+    pub success: bool,
+    pub data: TierConfigDataMock,
+}
+
+// =============================================================================
 // Test Data Factories
 // =============================================================================
 
@@ -634,6 +726,77 @@ impl ZionTestData {
             email_verified: false,
             created_at: "2024-01-15T00:00:00Z".to_string(),
             last_login_at: None,
+        }
+    }
+
+    /// Create default tier configuration for testing
+    ///
+    /// Provides a realistic tier config with:
+    /// - Simple: gpt-4o-mini (cost 1)
+    /// - Moderate: gpt-4o (cost 5)
+    /// - Complex: gpt-4o (cost 5)
+    pub fn default_tier_config() -> TierConfigDataMock {
+        TierConfigDataMock {
+            version: "1.0.0".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            tiers: TierMappingMock {
+                simple: vec![ModelConfigMock {
+                    provider: "openai".to_string(),
+                    model: "gpt-4o-mini".to_string(),
+                    relative_cost: 1,
+                    input_price_per_million: 0.15,
+                    output_price_per_million: 0.60,
+                }],
+                moderate: vec![ModelConfigMock {
+                    provider: "openai".to_string(),
+                    model: "gpt-4o".to_string(),
+                    relative_cost: 5,
+                    input_price_per_million: 2.50,
+                    output_price_per_million: 10.0,
+                }],
+                complex: vec![ModelConfigMock {
+                    provider: "openai".to_string(),
+                    model: "gpt-4o".to_string(),
+                    relative_cost: 5,
+                    input_price_per_million: 2.50,
+                    output_price_per_million: 10.0,
+                }],
+            },
+        }
+    }
+
+    /// Create custom tier config with specified models
+    pub fn tier_config_with(
+        simple_model: &str,
+        moderate_model: &str,
+        complex_model: &str,
+    ) -> TierConfigDataMock {
+        TierConfigDataMock {
+            version: "1.0.0".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            tiers: TierMappingMock {
+                simple: vec![ModelConfigMock {
+                    provider: "openai".to_string(),
+                    model: simple_model.to_string(),
+                    relative_cost: 1,
+                    input_price_per_million: 0.15,
+                    output_price_per_million: 0.60,
+                }],
+                moderate: vec![ModelConfigMock {
+                    provider: "openai".to_string(),
+                    model: moderate_model.to_string(),
+                    relative_cost: 5,
+                    input_price_per_million: 2.50,
+                    output_price_per_million: 10.0,
+                }],
+                complex: vec![ModelConfigMock {
+                    provider: "openai".to_string(),
+                    model: complex_model.to_string(),
+                    relative_cost: 5,
+                    input_price_per_million: 2.50,
+                    output_price_per_million: 10.0,
+                }],
+            },
         }
     }
 }
