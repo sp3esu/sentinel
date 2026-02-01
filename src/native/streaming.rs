@@ -6,9 +6,11 @@
 
 use bytes::Bytes;
 use serde::Serialize;
+use std::collections::HashMap;
 use thiserror::Error;
 
-use super::response::{Delta, StreamChoice, StreamChunk, Usage};
+use super::response::{Delta, StreamChoice, StreamChunk, ToolCallDelta, Usage};
+use super::types::{ToolCall, ToolCallFunction};
 
 /// Metadata cached across streaming chunks for consistent response generation.
 ///
@@ -242,6 +244,105 @@ pub fn format_error_chunk(error: &StreamError) -> Bytes {
         StreamError::ProviderError { message, code } => {
             format_error_event(message, code.as_deref())
         }
+    }
+}
+
+// ============================================================================
+// Tool Call Accumulator
+// ============================================================================
+
+/// Internal struct for accumulating tool call data across deltas
+#[derive(Debug, Default)]
+struct AccumulatedToolCall {
+    /// Provider ID from first delta
+    id: Option<String>,
+    /// Accumulated function name from deltas
+    function_name: String,
+    /// Accumulated argument string fragments
+    arguments: String,
+}
+
+/// Accumulates tool call deltas across streaming chunks.
+///
+/// OpenAI sends tool calls incrementally with `index` identifying which
+/// tool call in a parallel set is being updated. This accumulator tracks
+/// each tool call separately and finalizes them when streaming completes.
+#[derive(Debug, Default)]
+pub struct ToolCallAccumulator {
+    /// Index -> accumulated tool call data
+    tool_calls: HashMap<u32, AccumulatedToolCall>,
+}
+
+impl ToolCallAccumulator {
+    /// Create a new empty accumulator
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Process a streaming delta for tool calls.
+    ///
+    /// Call this for each ToolCallDelta received in a streaming chunk.
+    pub fn accumulate(&mut self, delta: &ToolCallDelta) {
+        let entry = self.tool_calls.entry(delta.index).or_default();
+
+        if let Some(ref id) = delta.id {
+            entry.id = Some(id.clone());
+        }
+        if let Some(ref func) = delta.function {
+            if let Some(ref name) = func.name {
+                entry.function_name = name.clone();
+            }
+            if let Some(ref args) = func.arguments {
+                entry.arguments.push_str(args);
+            }
+        }
+    }
+
+    /// Check if any tool calls have been accumulated.
+    pub fn has_tool_calls(&self) -> bool {
+        !self.tool_calls.is_empty()
+    }
+
+    /// Finalize accumulated tool calls, parsing arguments as JSON.
+    ///
+    /// Returns ToolCalls with PROVIDER IDs (not Sentinel IDs).
+    /// Caller must use ToolCallIdMapping to generate Sentinel IDs.
+    ///
+    /// Returns error if any arguments are not valid JSON.
+    pub fn finalize(self) -> Result<Vec<(String, ToolCall)>, StreamError> {
+        let mut result = Vec::with_capacity(self.tool_calls.len());
+
+        // Sort by index to maintain order
+        let mut entries: Vec<_> = self.tool_calls.into_iter().collect();
+        entries.sort_by_key(|(idx, _)| *idx);
+
+        for (index, acc) in entries {
+            let provider_id = acc.id.ok_or_else(|| {
+                StreamError::ParseError(format!("Tool call at index {} missing ID", index))
+            })?;
+
+            // Parse arguments as JSON (per CONTEXT.md - fail on malformed)
+            let arguments: serde_json::Value =
+                serde_json::from_str(&acc.arguments).map_err(|e| {
+                    StreamError::ParseError(format!(
+                        "Malformed tool arguments at index {}: {}",
+                        index, e
+                    ))
+                })?;
+
+            let tool_call = ToolCall {
+                id: provider_id.clone(), // Temporary - caller replaces with Sentinel ID
+                call_type: "function".to_string(),
+                function: ToolCallFunction {
+                    name: acc.function_name,
+                    arguments,
+                },
+            };
+
+            result.push((provider_id, tool_call));
+        }
+
+        Ok(result)
     }
 }
 
@@ -512,5 +613,226 @@ mod tests {
             code: Some("api_error".to_string()),
         };
         assert_eq!(provider_err.to_string(), "Provider error: API error");
+    }
+
+    // =============================================================================
+    // ToolCallAccumulator Tests
+    // =============================================================================
+
+    use super::ToolCallAccumulator;
+    use crate::native::response::ToolCallFunctionDelta;
+
+    #[test]
+    fn test_tool_call_accumulator_single_call() {
+        let mut acc = ToolCallAccumulator::new();
+
+        // First delta with id and function name
+        acc.accumulate(&ToolCallDelta {
+            index: 0,
+            id: Some("call_abc123".to_string()),
+            call_type: Some("function".to_string()),
+            function: Some(ToolCallFunctionDelta {
+                name: Some("get_weather".to_string()),
+                arguments: Some("{\"loc".to_string()),
+            }),
+        });
+
+        // Subsequent deltas with argument fragments
+        acc.accumulate(&ToolCallDelta {
+            index: 0,
+            id: None,
+            call_type: None,
+            function: Some(ToolCallFunctionDelta {
+                name: None,
+                arguments: Some("ation\":".to_string()),
+            }),
+        });
+
+        acc.accumulate(&ToolCallDelta {
+            index: 0,
+            id: None,
+            call_type: None,
+            function: Some(ToolCallFunctionDelta {
+                name: None,
+                arguments: Some("\"Boston\"}".to_string()),
+            }),
+        });
+
+        assert!(acc.has_tool_calls());
+
+        let result = acc.finalize().unwrap();
+        assert_eq!(result.len(), 1);
+
+        let (provider_id, tool_call) = &result[0];
+        assert_eq!(provider_id, "call_abc123");
+        assert_eq!(tool_call.function.name, "get_weather");
+        assert_eq!(
+            tool_call.function.arguments,
+            serde_json::json!({"location": "Boston"})
+        );
+    }
+
+    #[test]
+    fn test_tool_call_accumulator_multiple_parallel_calls() {
+        let mut acc = ToolCallAccumulator::new();
+
+        // First tool call
+        acc.accumulate(&ToolCallDelta {
+            index: 0,
+            id: Some("call_weather".to_string()),
+            call_type: Some("function".to_string()),
+            function: Some(ToolCallFunctionDelta {
+                name: Some("get_weather".to_string()),
+                arguments: Some("{\"city\":\"NYC\"}".to_string()),
+            }),
+        });
+
+        // Second tool call (parallel, different index)
+        acc.accumulate(&ToolCallDelta {
+            index: 1,
+            id: Some("call_time".to_string()),
+            call_type: Some("function".to_string()),
+            function: Some(ToolCallFunctionDelta {
+                name: Some("get_time".to_string()),
+                arguments: Some("{\"tz\":\"EST\"}".to_string()),
+            }),
+        });
+
+        assert!(acc.has_tool_calls());
+
+        let result = acc.finalize().unwrap();
+        assert_eq!(result.len(), 2);
+
+        // Should be sorted by index
+        assert_eq!(result[0].0, "call_weather");
+        assert_eq!(result[0].1.function.name, "get_weather");
+        assert_eq!(result[1].0, "call_time");
+        assert_eq!(result[1].1.function.name, "get_time");
+    }
+
+    #[test]
+    fn test_tool_call_accumulator_finalize_parses_json() {
+        let mut acc = ToolCallAccumulator::new();
+
+        acc.accumulate(&ToolCallDelta {
+            index: 0,
+            id: Some("call_test".to_string()),
+            call_type: Some("function".to_string()),
+            function: Some(ToolCallFunctionDelta {
+                name: Some("search".to_string()),
+                arguments: Some("{\"query\":\"rust\",\"limit\":10}".to_string()),
+            }),
+        });
+
+        let result = acc.finalize().unwrap();
+        let args = &result[0].1.function.arguments;
+
+        assert!(args.is_object());
+        assert_eq!(args["query"], "rust");
+        assert_eq!(args["limit"], 10);
+    }
+
+    #[test]
+    fn test_tool_call_accumulator_malformed_arguments() {
+        let mut acc = ToolCallAccumulator::new();
+
+        acc.accumulate(&ToolCallDelta {
+            index: 0,
+            id: Some("call_bad".to_string()),
+            call_type: Some("function".to_string()),
+            function: Some(ToolCallFunctionDelta {
+                name: Some("some_func".to_string()),
+                arguments: Some("{invalid json".to_string()),
+            }),
+        });
+
+        let result = acc.finalize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, StreamError::ParseError(msg) if msg.contains("index 0")));
+    }
+
+    #[test]
+    fn test_tool_call_accumulator_missing_id() {
+        let mut acc = ToolCallAccumulator::new();
+
+        // Delta without ID
+        acc.accumulate(&ToolCallDelta {
+            index: 0,
+            id: None,
+            call_type: Some("function".to_string()),
+            function: Some(ToolCallFunctionDelta {
+                name: Some("test".to_string()),
+                arguments: Some("{}".to_string()),
+            }),
+        });
+
+        let result = acc.finalize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, StreamError::ParseError(msg) if msg.contains("missing ID")));
+    }
+
+    #[test]
+    fn test_tool_call_accumulator_empty() {
+        let acc = ToolCallAccumulator::new();
+        assert!(!acc.has_tool_calls());
+
+        let result = acc.finalize().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_tool_call_accumulator_interleaved_deltas() {
+        let mut acc = ToolCallAccumulator::new();
+
+        // Deltas for different indices arriving interleaved
+        acc.accumulate(&ToolCallDelta {
+            index: 0,
+            id: Some("call_a".to_string()),
+            call_type: Some("function".to_string()),
+            function: Some(ToolCallFunctionDelta {
+                name: Some("func_a".to_string()),
+                arguments: Some("{\"a\":".to_string()),
+            }),
+        });
+
+        acc.accumulate(&ToolCallDelta {
+            index: 1,
+            id: Some("call_b".to_string()),
+            call_type: Some("function".to_string()),
+            function: Some(ToolCallFunctionDelta {
+                name: Some("func_b".to_string()),
+                arguments: Some("{\"b\":".to_string()),
+            }),
+        });
+
+        // More arguments for index 0
+        acc.accumulate(&ToolCallDelta {
+            index: 0,
+            id: None,
+            call_type: None,
+            function: Some(ToolCallFunctionDelta {
+                name: None,
+                arguments: Some("1}".to_string()),
+            }),
+        });
+
+        // More arguments for index 1
+        acc.accumulate(&ToolCallDelta {
+            index: 1,
+            id: None,
+            call_type: None,
+            function: Some(ToolCallFunctionDelta {
+                name: None,
+                arguments: Some("2}".to_string()),
+            }),
+        });
+
+        let result = acc.finalize().unwrap();
+        assert_eq!(result.len(), 2);
+
+        assert_eq!(result[0].1.function.arguments, serde_json::json!({"a": 1}));
+        assert_eq!(result[1].1.function.arguments, serde_json::json!({"b": 2}));
     }
 }
