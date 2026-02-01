@@ -7,6 +7,19 @@ use utoipa::{
     Modify, OpenApi,
 };
 
+use crate::native::{
+    error::{NativeError, NativeErrorResponse},
+    request::{ChatCompletionRequest, StopSequence},
+    response::{
+        ChatCompletionResponse, Choice, ChoiceMessage, Delta, StreamChoice, StreamChunk,
+        ToolCallDelta, ToolCallFunctionDelta, Usage,
+    },
+    types::{
+        Content, ContentPart, FunctionDefinition, ImageUrl, Message, Role, Tier, ToolCall,
+        ToolCallFunction, ToolChoice, ToolDefinition, ToolResult, ToolResultContent,
+    },
+};
+
 /// OpenAPI specification for the Sentinel Native API
 #[derive(OpenApi)]
 #[openapi(
@@ -16,7 +29,40 @@ use utoipa::{
         description = "Native API for Sentinel AI Proxy - unified format with tier routing and session management"
     ),
     paths(),
-    components(schemas()),
+    components(
+        schemas(
+            // Types
+            Role,
+            ImageUrl,
+            ContentPart,
+            Content,
+            Message,
+            Tier,
+            FunctionDefinition,
+            ToolDefinition,
+            ToolCallFunction,
+            ToolCall,
+            ToolResultContent,
+            ToolResult,
+            ToolChoice,
+            // Request
+            StopSequence,
+            ChatCompletionRequest,
+            // Response
+            Usage,
+            ChoiceMessage,
+            Choice,
+            ChatCompletionResponse,
+            ToolCallFunctionDelta,
+            ToolCallDelta,
+            Delta,
+            StreamChoice,
+            StreamChunk,
+            // Error
+            NativeError,
+            NativeErrorResponse,
+        )
+    ),
     modifiers(&SecurityAddon),
     tags(
         (name = "Chat", description = "Chat completion endpoints")

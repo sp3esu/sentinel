@@ -3,27 +3,32 @@
 //! Defines chat completion response and streaming chunk structures.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use super::types::{Role, ToolCall};
 
 /// Token usage statistics
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct Usage {
     /// Number of tokens in the prompt
+    #[schema(example = 50)]
     pub prompt_tokens: u32,
     /// Number of tokens in the completion
+    #[schema(example = 100)]
     pub completion_tokens: u32,
     /// Total tokens used
+    #[schema(example = 150)]
     pub total_tokens: u32,
 }
 
 /// Message in a completion choice
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ChoiceMessage {
     /// Role of the message author
     pub role: Role,
     /// Content of the message
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Hello! I'm an AI assistant. How can I help you today?")]
     pub content: Option<String>,
     /// Tool calls made by the assistant
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -31,27 +36,33 @@ pub struct ChoiceMessage {
 }
 
 /// A completion choice
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct Choice {
     /// Index of this choice
+    #[schema(example = 0)]
     pub index: u32,
     /// The generated message
     pub message: ChoiceMessage,
     /// Reason the generation stopped
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "stop")]
     pub finish_reason: Option<String>,
 }
 
 /// Chat completion response (non-streaming)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ChatCompletionResponse {
     /// Unique identifier for this completion
+    #[schema(example = "chatcmpl-abc123")]
     pub id: String,
     /// Object type (always "chat.completion")
+    #[schema(example = "chat.completion")]
     pub object: String,
     /// Unix timestamp of creation
+    #[schema(example = 1677858242)]
     pub created: u64,
     /// Model used for completion
+    #[schema(example = "gpt-4o-mini")]
     pub model: String,
     /// List of completion choices
     pub choices: Vec<Choice>,
@@ -60,26 +71,31 @@ pub struct ChatCompletionResponse {
 }
 
 /// Function call delta in streaming tool calls
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, ToSchema)]
 pub struct ToolCallFunctionDelta {
     /// Function name (only in first delta for this tool call)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "get_weather")]
     pub name: Option<String>,
     /// Argument string fragment (accumulated across deltas)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "{\"location\":\"Lon")]
     pub arguments: Option<String>,
 }
 
 /// Tool call delta in streaming responses
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ToolCallDelta {
     /// Index of this tool call in the parallel set
+    #[schema(example = 0)]
     pub index: u32,
     /// Tool call ID (only in first delta for this index)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "call_abc123xyz")]
     pub id: Option<String>,
     /// Type of tool call (only in first delta)
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    #[schema(rename = "type", example = "function")]
     pub call_type: Option<String>,
     /// Function call details
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,13 +103,14 @@ pub struct ToolCallDelta {
 }
 
 /// Delta content in a streaming chunk
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, ToSchema)]
 pub struct Delta {
     /// Role (only present in first chunk)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
     /// Content fragment
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Hello")]
     pub content: Option<String>,
     /// Tool call deltas
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -101,27 +118,33 @@ pub struct Delta {
 }
 
 /// A choice in a streaming chunk
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct StreamChoice {
     /// Index of this choice
+    #[schema(example = 0)]
     pub index: u32,
     /// Delta content
     pub delta: Delta,
     /// Reason the generation stopped (only in final chunk)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "stop")]
     pub finish_reason: Option<String>,
 }
 
 /// Streaming chunk for chat completion
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct StreamChunk {
     /// Unique identifier for this completion
+    #[schema(example = "chatcmpl-abc123")]
     pub id: String,
     /// Object type (always "chat.completion.chunk")
+    #[schema(example = "chat.completion.chunk")]
     pub object: String,
     /// Unix timestamp of creation
+    #[schema(example = 1677858242)]
     pub created: u64,
     /// Model used for completion
+    #[schema(example = "gpt-4o-mini")]
     pub model: String,
     /// List of choices with delta content
     pub choices: Vec<StreamChoice>,

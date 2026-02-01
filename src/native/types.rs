@@ -6,10 +6,12 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use utoipa::ToSchema;
 
 /// Role of a message participant
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "lowercase")]
+#[schema(example = "user")]
 pub enum Role {
     /// System message providing instructions or context
     System,
@@ -22,22 +24,25 @@ pub enum Role {
 }
 
 /// Image URL reference for multimodal content
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ImageUrl {
     /// URL of the image (can be data URL or HTTP URL)
+    #[schema(example = "https://example.com/image.png")]
     pub url: String,
     /// Image detail level: "auto", "low", or "high"
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "auto")]
     pub detail: Option<String>,
 }
 
 /// A part of multimodal content
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
     /// Text content
     Text {
         /// The text content
+        #[schema(example = "Hello, how can I help you today?")]
         text: String,
     },
     /// Image URL reference
@@ -48,10 +53,11 @@ pub enum ContentPart {
 }
 
 /// Message content - either plain text or multimodal parts
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(untagged)]
 pub enum Content {
     /// Simple text content
+    #[schema(example = "Hello, how can I help you today?")]
     Text(String),
     /// Multimodal content with text and/or images
     Parts(Vec<ContentPart>),
@@ -78,7 +84,7 @@ impl Content {
 }
 
 /// A chat message with role and content
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct Message {
     /// The role of the message author
     pub role: Role,
@@ -86,9 +92,11 @@ pub struct Message {
     pub content: Content,
     /// Optional name of the author (for multi-user scenarios)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Alice")]
     pub name: Option<String>,
     /// Tool call ID this message is responding to (for tool messages)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "call_abc123xyz")]
     pub tool_call_id: Option<String>,
     /// Tool calls made by the assistant (for assistant messages)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -99,8 +107,9 @@ pub struct Message {
 ///
 /// Ordered from lowest to highest complexity for upgrade comparison.
 /// Implements PartialOrd so tiers can be compared: Simple < Moderate < Complex.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash, ToSchema)]
 #[serde(rename_all = "snake_case")]
+#[schema(example = "simple")]
 pub enum Tier {
     /// Simple tasks - fast, cheap models (e.g., gpt-4o-mini)
     Simple,
@@ -178,42 +187,50 @@ pub fn validate_tool_schema(schema: &serde_json::Value) -> Result<(), String> {
 }
 
 /// Function definition within a tool
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct FunctionDefinition {
     /// Function name (validated: a-zA-Z0-9_ only)
+    #[schema(example = "get_weather")]
     pub name: String,
     /// Description of what the function does (required for better LLM performance)
+    #[schema(example = "Get the current weather for a given location")]
     pub description: String,
     /// JSON Schema defining the function parameters
+    #[schema(value_type = Object, example = json!({"type": "object", "properties": {"location": {"type": "string", "description": "The city name"}}}))]
     pub parameters: serde_json::Value,
 }
 
 /// Tool definition for the Native API
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ToolDefinition {
     /// Type of tool (always "function")
     #[serde(rename = "type")]
+    #[schema(rename = "type", example = "function")]
     pub tool_type: String,
     /// Function definition
     pub function: FunctionDefinition,
 }
 
 /// Function call details within a tool call
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ToolCallFunction {
     /// Name of the function being called
+    #[schema(example = "get_weather")]
     pub name: String,
     /// Arguments as parsed JSON object (not string, for ergonomics)
+    #[schema(value_type = Object, example = json!({"location": "London", "unit": "celsius"}))]
     pub arguments: serde_json::Value,
 }
 
 /// A tool call from the assistant
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ToolCall {
     /// Unique identifier for this tool call (format: call_{uuid})
+    #[schema(example = "call_abc123xyz")]
     pub id: String,
     /// Type of tool call (always "function")
     #[serde(rename = "type")]
+    #[schema(rename = "type", example = "function")]
     pub call_type: String,
     /// Function call details
     pub function: ToolCallFunction,
@@ -227,7 +244,10 @@ impl ToolCall {
 }
 
 /// Content of a tool result - can be plain text or JSON
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serializes as string for text or JSON object/array for structured data.
+#[derive(Debug, Clone, PartialEq, ToSchema)]
+#[schema(as = serde_json::Value, example = json!("The weather in London is sunny, 22C"))]
 pub enum ToolResultContent {
     /// Plain string content
     Text(String),
@@ -271,19 +291,24 @@ impl<'de> Deserialize<'de> for ToolResultContent {
 }
 
 /// Result of a tool call
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct ToolResult {
     /// ID of the tool call this result is for
+    #[schema(example = "call_abc123xyz")]
     pub tool_call_id: String,
     /// Content of the result
     pub content: ToolResultContent,
     /// Optional flag indicating this is an error result
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = false)]
     pub is_error: Option<bool>,
 }
 
 /// Tool choice for controlling tool usage
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Can be a string ("auto", "none", "required") or an object for specific function.
+#[derive(Debug, Clone, PartialEq, ToSchema)]
+#[schema(as = serde_json::Value, example = json!("auto"))]
 pub enum ToolChoice {
     /// Let the model decide whether to call tools
     Auto,

@@ -9,29 +9,35 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 /// Native API error with OpenAI-compatible structure
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct NativeError {
     /// Human-readable error message
+    #[schema(example = "Invalid request body: missing required field 'messages'")]
     pub message: String,
     /// Error type category
     #[serde(rename = "type")]
+    #[schema(rename = "type", example = "invalid_request_error")]
     pub error_type: String,
     /// Error code for programmatic handling
+    #[schema(example = "invalid_request")]
     pub code: String,
     /// Provider hint when error originates from upstream
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "openai")]
     pub provider: Option<String>,
 }
 
 /// Wrapper for error responses matching OpenAI's format
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct NativeErrorResponse {
     /// The error details
     pub error: NativeError,
     /// Rate limit information (internal use, not serialized in response body)
     #[serde(skip)]
+    #[schema(ignore)]
     pub rate_limit_info: Option<RateLimitInfo>,
 }
 

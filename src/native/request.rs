@@ -3,16 +3,19 @@
 //! Defines the chat completion request structure with strict validation.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use super::types::{Message, Tier, ToolChoice, ToolDefinition};
 
 /// Stop sequence - can be a single string or array of strings
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(untagged)]
 pub enum StopSequence {
     /// Single stop sequence
+    #[schema(example = "END")]
     Single(String),
     /// Multiple stop sequences
+    #[schema(example = json!(["STOP", "END"]))]
     Multiple(Vec<String>),
 }
 
@@ -20,7 +23,7 @@ pub enum StopSequence {
 ///
 /// Uses `deny_unknown_fields` to ensure strict validation - requests with
 /// unexpected fields will be rejected. This catches typos and enforces the API contract.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChatCompletionRequest {
     /// Complexity tier for model routing (optional, defaults to simple)
@@ -30,28 +33,34 @@ pub struct ChatCompletionRequest {
     /// - `moderate`: Balanced models for typical assistant interactions
     /// - `complex`: Most capable models for difficult reasoning tasks
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "simple")]
     pub tier: Option<Tier>,
     /// Messages in the conversation
     pub messages: Vec<Message>,
     /// Sampling temperature (0.0 to 2.0)
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 0.0, maximum = 2.0, example = 0.7)]
     pub temperature: Option<f64>,
     /// Maximum tokens to generate
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1, example = 1000)]
     pub max_tokens: Option<u32>,
     /// Nucleus sampling parameter
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 0.0, maximum = 1.0, example = 0.95)]
     pub top_p: Option<f64>,
     /// Stop sequences
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<StopSequence>,
     /// Whether to stream the response
     #[serde(default)]
+    #[schema(example = false)]
     pub stream: bool,
     /// Conversation ID for session stickiness (optional)
     /// When provided, uses the provider/model from the first request in this conversation.
     /// When absent, triggers fresh provider selection each time.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "conv-550e8400-e29b-41d4-a716-446655440000")]
     pub conversation_id: Option<String>,
     /// Tool definitions available to the model
     #[serde(skip_serializing_if = "Option::is_none")]
