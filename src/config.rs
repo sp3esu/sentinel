@@ -31,6 +31,9 @@ pub struct Config {
     /// Cache TTL for JWT validation (in seconds)
     pub jwt_cache_ttl_seconds: u64,
 
+    /// Session TTL for provider stickiness (in seconds, default: 24 hours)
+    pub session_ttl_seconds: u64,
+
     /// Enable debug endpoints (development only)
     pub debug_enabled: bool,
 }
@@ -65,6 +68,10 @@ impl Config {
                 .unwrap_or_else(|_| "300".to_string())
                 .parse()
                 .context("Invalid JWT_CACHE_TTL_SECONDS")?,
+            session_ttl_seconds: env::var("SESSION_TTL_SECONDS")
+                .unwrap_or_else(|_| "86400".to_string())
+                .parse()
+                .context("Invalid SESSION_TTL_SECONDS")?,
 
             debug_enabled: env::var("SENTINEL_DEBUG")
                 .map(|v| v == "true" || v == "1")
@@ -90,6 +97,23 @@ mod tests {
         assert_eq!(config.redis_url, "redis://localhost:6379");
         assert_eq!(config.openai_api_url, "https://api.openai.com/v1");
         assert_eq!(config.cache_ttl_seconds, 300);
+
+        // Clean up
+        env::remove_var("ZION_API_URL");
+        env::remove_var("ZION_API_KEY");
+    }
+
+    #[test]
+    fn test_session_ttl_default() {
+        // Set required env vars
+        env::set_var("ZION_API_URL", "http://localhost:3000");
+        env::set_var("ZION_API_KEY", "test-key");
+
+        let config = Config::from_env().unwrap();
+
+        // Default session TTL is 24 hours (86400 seconds)
+        assert_eq!(config.session_ttl_seconds, 86400);
+        assert_eq!(config.session_ttl_seconds, 24 * 60 * 60);
 
         // Clean up
         env::remove_var("ZION_API_URL");
