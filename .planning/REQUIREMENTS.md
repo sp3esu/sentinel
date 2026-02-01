@@ -23,12 +23,12 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Tool Calling
 
-- [ ] **TOOL-01**: Unified tool definition format (name, description, parameters)
-- [ ] **TOOL-02**: Tool schemas translated to OpenAI function format
-- [ ] **TOOL-03**: Tool schemas translated to Anthropic tool format
-- [ ] **TOOL-04**: Tool call responses normalized to unified format
-- [ ] **TOOL-05**: Tool results accepted and translated to provider format
-- [ ] **TOOL-06**: Streaming with tool calls handled correctly
+- [x] **TOOL-01**: Unified tool definition format (name, description, parameters)
+- [x] **TOOL-02**: Tool schemas translated to OpenAI function format
+- [x] **TOOL-03**: Tool schemas translated to Anthropic tool format
+- [x] **TOOL-04**: Tool call responses normalized to unified format
+- [x] **TOOL-05**: Tool results accepted and translated to provider format
+- [x] **TOOL-06**: Streaming with tool calls handled correctly
 
 ### Session Management
 
@@ -109,12 +109,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TRNS-02 | Phase 1 | Complete |
 | TRNS-03 | Phase 1 | Complete |
 | TRNS-04 | Phase 1 | Complete |
-| TOOL-01 | Phase 5 | Pending |
-| TOOL-02 | Phase 5 | Pending |
-| TOOL-03 | Phase 5 | Pending |
-| TOOL-04 | Phase 5 | Pending |
-| TOOL-05 | Phase 5 | Pending |
-| TOOL-06 | Phase 5 | Pending |
+| TOOL-01 | Phase 5 | Complete |
+| TOOL-02 | Phase 5 | Complete |
+| TOOL-03 | Phase 5 | Complete |
+| TOOL-04 | Phase 5 | Complete |
+| TOOL-05 | Phase 5 | Complete |
+| TOOL-06 | Phase 5 | Complete |
 | SESS-01 | Phase 3 | Complete |
 | SESS-02 | Phase 3 | Complete |
 | SESS-03 | Phase 3 | Complete |
