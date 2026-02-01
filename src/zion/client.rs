@@ -11,7 +11,7 @@ use crate::{
     zion::models::{
         BatchIncrementData, BatchIncrementItem, BatchIncrementRequest, BatchIncrementResponse,
         ExternalLimitsResponse, IncrementUsageData, IncrementUsageRequest, IncrementUsageResponse,
-        UserLimit, UserProfile, UserProfileResponse,
+        TierConfigData, TierConfigResponse, UserLimit, UserProfile, UserProfileResponse,
     },
 };
 
@@ -282,6 +282,53 @@ impl ZionClient {
             external_id = ?result.data.external_id,
             "JWT validated successfully"
         );
+        Ok(result.data)
+    }
+
+    /// Get tier configuration (global, not per-user)
+    ///
+    /// Fetches the tier-to-model mapping from Zion. This configuration
+    /// is global (same for all users) and changes infrequently.
+    #[instrument(skip(self))]
+    pub async fn get_tier_config(&self) -> AppResult<TierConfigData> {
+        let url = format!("{}/api/v1/tiers/config", self.base_url);
+
+        debug!(url = %url, "Fetching tier config from Zion");
+
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.api_key_headers())
+            .send()
+            .await?;
+
+        let status = response.status();
+        debug!(status = %status, "Zion tier config response status");
+
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            error!(status = %status, body = %text, "Zion tier config request failed");
+            return Err(AppError::UpstreamError(format!(
+                "Zion tier config API error {}: {}",
+                status, text
+            )));
+        }
+
+        let body = response.text().await?;
+        debug!(body = %body, "Zion tier config response body");
+
+        let result: TierConfigResponse = match serde_json::from_str(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                error!(error = %e, body = %body, "Failed to parse Zion tier config response");
+                return Err(AppError::UpstreamError(format!(
+                    "Failed to parse Zion tier config response: {}",
+                    e
+                )));
+            }
+        };
+
+        debug!(version = %result.data.version, "Successfully fetched tier config");
         Ok(result.data)
     }
 
