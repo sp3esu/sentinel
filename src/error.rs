@@ -2,8 +2,10 @@
 //!
 //! This module defines custom error types used throughout the application.
 
+use std::time::Duration;
+
 use axum::{
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -44,8 +46,12 @@ pub enum AppError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
-    #[error("Service unavailable: {0}")]
-    ServiceUnavailable(String),
+    /// Service temporarily unavailable (e.g., all providers in backoff)
+    #[error("Service unavailable: {message}")]
+    ServiceUnavailable {
+        message: String,
+        retry_after: Option<Duration>,
+    },
 
     #[error("Upstream error: {0}")]
     UpstreamError(String),
@@ -152,10 +158,10 @@ impl IntoResponse for AppError {
                 msg.clone(),
                 None,
             ),
-            AppError::ServiceUnavailable(msg) => (
+            AppError::ServiceUnavailable { message, .. } => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "SERVICE_UNAVAILABLE",
-                msg.clone(),
+                message.clone(),
                 None,
             ),
             AppError::UpstreamError(msg) => (
@@ -198,7 +204,16 @@ impl IntoResponse for AppError {
             },
         };
 
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+
+        // Add Retry-After header for ServiceUnavailable errors
+        if let AppError::ServiceUnavailable { retry_after: Some(duration), .. } = &self {
+            if let Ok(value) = HeaderValue::from_str(&duration.as_secs().to_string()) {
+                response.headers_mut().insert("Retry-After", value);
+            }
+        }
+
+        response
     }
 }
 
