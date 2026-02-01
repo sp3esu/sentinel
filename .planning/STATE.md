@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-01-31)
 
 **Core value:** Mindsmith can build and chat with assistants using any LLM provider through a single, stable API
-**Current focus:** Phase 6 - Documentation
+**Current focus:** Phase 6 - Documentation (COMPLETE)
 
 ## Current Position
 
 Phase: 6 of 6 (Documentation)
-Plan: 1 of 2 in current phase
-Status: In progress
-Last activity: 2026-02-01 - Completed 06-01-PLAN.md (OpenAPI specification)
+Plan: 2 of 2 in current phase
+Status: Phase complete
+Last activity: 2026-02-01 - Completed 06-02-PLAN.md (Docs endpoints)
 
-Progress: [====================] 97%
+Progress: [=====================] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 16
+- Total plans completed: 17
 - Average duration: 6 min
-- Total execution time: 101 min
+- Total execution time: 107 min
 
 **By Phase:**
 
@@ -32,11 +32,11 @@ Progress: [====================] 97%
 | 03-session-management | 2 | 12 min | 6 min |
 | 04-tier-routing | 4 | 29 min | 7 min |
 | 05-tool-calling | 3 | 25 min | 8 min |
-| 06-documentation | 1 | 9 min | 9 min |
+| 06-documentation | 2 | 15 min | 8 min |
 
 **Recent Trend:**
-- Last 5 plans: 05-01 (7min), 05-02 (11min), 05-03 (7min), 06-01 (9min)
-- Trend: Steady at 7-11 min
+- Last 5 plans: 05-02 (11min), 05-03 (7min), 06-01 (9min), 06-02 (6min)
+- Trend: Steady at 6-11 min
 
 *Updated after each plan completion*
 
@@ -94,6 +94,9 @@ Recent decisions affecting current work:
 | Use schema(as) for custom serde | 06-01 | ToolChoice/ToolResultContent use serde_json::Value representation |
 | Schema examples at struct level | 06-01 | utoipa 5.x doesn't support variant-level examples on enums |
 | SecurityAddon modifier pattern | 06-01 | Extensible security scheme definition via Modify trait |
+| CDN-hosted Swagger UI | 06-02 | Avoids bundling ~3MB static files, simpler build |
+| 404 on unauthorized docs | 06-02 | Hide endpoint existence from unauthorized users |
+| Generic router function | 06-02 | Router<S> enables merging with stateful routers |
 
 ### Pending Todos
 
@@ -106,5 +109,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-01
-Stopped at: Completed 06-01-PLAN.md
-Resume file: .planning/phases/06-documentation/06-02-PLAN.md
+Stopped at: Completed 06-02-PLAN.md
+Resume file: None - Project complete
