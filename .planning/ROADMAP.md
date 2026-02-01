@@ -96,12 +96,12 @@ Plans:
   3. Assistant tool calls return in unified format (tool_call_id, function name, arguments)
   4. Tool results submitted and translated to provider format
   5. Streaming with tool calls accumulates correctly and emits tool_call chunks
-**Plans**: TBD
+**Plans**: 3 plans in 2 waves
 
 Plans:
-- [ ] 05-01: Tool schema translation
-- [ ] 05-02: Tool call/result handling
-- [ ] 05-03: Streaming with tool calls
+- [ ] 05-01-PLAN.md - Tool types and schema validation (Wave 1)
+- [ ] 05-02-PLAN.md - Request translation and tool call response handling (Wave 1)
+- [ ] 05-03-PLAN.md - Streaming tool calls and integration tests (Wave 2)
 
 ### Phase 6: Documentation
 **Goal**: Provide OpenAPI specification for the Native API with protected access
@@ -129,7 +129,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 2. API Endpoints | 2/2 | Complete | 2026-02-01 |
 | 3. Session Management | 2/2 | Complete | 2026-02-01 |
 | 4. Tier Routing | 4/4 | Complete | 2026-02-01 |
-| 5. Tool Calling | 0/3 | Not started | - |
+| 5. Tool Calling | 0/3 | Ready | - |
 | 6. Documentation | 0/2 | Not started | - |
 
 ---
