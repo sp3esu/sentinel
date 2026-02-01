@@ -19,9 +19,11 @@ WORKDIR /app
 # Copy manifests first for better layer caching
 COPY Cargo.toml Cargo.lock* ./
 
-# Create a dummy main.rs to build dependencies
-RUN mkdir src && \
-    echo 'fn main() { println!("Dummy"); }' > src/main.rs
+# Create dummy source files to build dependencies
+# (includes export_openapi binary defined in Cargo.toml)
+RUN mkdir -p src/bin && \
+    echo 'fn main() { println!("Dummy"); }' > src/main.rs && \
+    echo 'fn main() {}' > src/bin/export_openapi.rs
 
 # Build dependencies only (this layer will be cached)
 RUN cargo build --release && \
