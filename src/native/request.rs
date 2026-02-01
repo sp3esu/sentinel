@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{Message, Tier};
+use super::types::{Message, Tier, ToolChoice, ToolDefinition};
 
 /// Stop sequence - can be a single string or array of strings
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,6 +53,12 @@ pub struct ChatCompletionRequest {
     /// When absent, triggers fresh provider selection each time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
+    /// Tool definitions available to the model
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDefinition>>,
+    /// How the model should use the provided tools
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
 }
 
 #[cfg(test)]
@@ -212,6 +218,7 @@ mod tests {
                 content: Content::Text("Hi".to_string()),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: Some(0.8),
             max_tokens: Some(500),
@@ -219,6 +226,8 @@ mod tests {
             stop: Some(StopSequence::Single("END".to_string())),
             stream: true,
             conversation_id: None,
+            tools: None,
+            tool_choice: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         let deserialized: ChatCompletionRequest = serde_json::from_str(&json).unwrap();
@@ -236,6 +245,8 @@ mod tests {
             stop: None,
             stream: false,
             conversation_id: None,
+            tools: None,
+            tool_choice: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         // tier should not appear in serialized output when None
@@ -253,6 +264,8 @@ mod tests {
             stop: None,
             stream: false,
             conversation_id: None,
+            tools: None,
+            tool_choice: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"tier\":\"complex\""));
@@ -298,6 +311,7 @@ mod tests {
                 content: Content::Text("Hi".to_string()),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -305,6 +319,8 @@ mod tests {
             stop: None,
             stream: false,
             conversation_id: None,
+            tools: None,
+            tool_choice: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         // conversation_id should not appear in serialized output when None
@@ -320,6 +336,7 @@ mod tests {
                 content: Content::Text("Hi".to_string()),
                 name: None,
                 tool_call_id: None,
+                tool_calls: None,
             }],
             temperature: None,
             max_tokens: None,
@@ -327,6 +344,8 @@ mod tests {
             stop: None,
             stream: false,
             conversation_id: Some("conv-uuid-123".to_string()),
+            tools: None,
+            tool_choice: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("conversation_id"));
@@ -344,5 +363,140 @@ mod tests {
             request.conversation_id,
             Some("550e8400-e29b-41d4-a716-446655440000".to_string())
         );
+    }
+
+    // =============================================================================
+    // Tools Field Tests
+    // =============================================================================
+
+    #[test]
+    fn test_request_with_tools_deserializes() {
+        use crate::native::types::{FunctionDefinition, ToolDefinition};
+
+        let json = r#"{
+            "messages": [{"role": "user", "content": "What's the weather?"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get the current weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "location": {"type": "string"}
+                            },
+                            "required": ["location"]
+                        }
+                    }
+                }
+            ]
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(request.tools.is_some());
+        let tools = request.tools.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].tool_type, "function");
+        assert_eq!(tools[0].function.name, "get_weather");
+    }
+
+    #[test]
+    fn test_request_with_tool_choice_auto_deserializes() {
+        let json = r#"{
+            "messages": [],
+            "tool_choice": "auto"
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.tool_choice, Some(ToolChoice::Auto));
+    }
+
+    #[test]
+    fn test_request_with_tool_choice_none_deserializes() {
+        let json = r#"{
+            "messages": [],
+            "tool_choice": "none"
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.tool_choice, Some(ToolChoice::None));
+    }
+
+    #[test]
+    fn test_request_with_tool_choice_required_deserializes() {
+        let json = r#"{
+            "messages": [],
+            "tool_choice": "required"
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.tool_choice, Some(ToolChoice::Required));
+    }
+
+    #[test]
+    fn test_request_with_tool_choice_function_deserializes() {
+        let json = r#"{
+            "messages": [],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            request.tool_choice,
+            Some(ToolChoice::Function {
+                name: "get_weather".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_request_with_empty_tools_array() {
+        let json = r#"{
+            "messages": [],
+            "tools": []
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.tools, Some(vec![]));
+    }
+
+    #[test]
+    fn test_tools_omitted_from_serialization_when_none() {
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(!json.contains("tools"));
+        assert!(!json.contains("tool_choice"));
+    }
+
+    #[test]
+    fn test_tool_name_validation() {
+        use crate::native::types::validate_tool_name;
+
+        // Valid tool names from request should pass validation
+        let json = r#"{
+            "messages": [],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object"}
+                    }
+                }
+            ]
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let tools = request.tools.unwrap();
+        assert!(validate_tool_name(&tools[0].function.name));
+
+        // Invalid name would fail validation (tested separately in types tests)
+        assert!(!validate_tool_name("invalid-name"));
     }
 }
