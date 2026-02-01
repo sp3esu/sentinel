@@ -5,6 +5,9 @@
 //! provider-specific formats internally.
 
 pub mod chat;
+pub mod docs;
+
+pub use docs::create_docs_router;
 
 use std::sync::Arc;
 
