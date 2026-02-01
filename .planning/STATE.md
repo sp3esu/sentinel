@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-01-31)
 ## Current Position
 
 Phase: 4 of 6 (Tier Routing)
-Plan: 1 of 3 in current phase
+Plan: 2 of 4 in current phase (01 and 01b complete)
 Status: In progress
-Last activity: 2026-02-01 - Completed 04-01-PLAN.md (Foundation Types)
+Last activity: 2026-02-01 - Completed 04-01b-PLAN.md (Zion Tier Config)
 
-Progress: [===========         ] 55%
+Progress: [============        ] 60%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 9
+- Total plans completed: 10
 - Average duration: 5 min
-- Total execution time: 44 min
+- Total execution time: 49 min
 
 **By Phase:**
 
@@ -30,10 +30,10 @@ Progress: [===========         ] 55%
 | 01-types-and-translation | 4 | 19 min | 5 min |
 | 02-api-endpoints | 2 | 7 min | 4 min |
 | 03-session-management | 2 | 12 min | 6 min |
-| 04-tier-routing | 1 | 6 min | 6 min |
+| 04-tier-routing | 2 | 11 min | 6 min |
 
 **Recent Trend:**
-- Last 5 plans: 02-02 (3min), 03-01 (4min), 03-02 (8min), 04-01 (6min)
+- Last 5 plans: 03-01 (4min), 03-02 (8min), 04-01 (6min), 04-01b (5min)
 - Trend: Steady at 4-8 min
 
 *Updated after each plan completion*
@@ -71,6 +71,8 @@ Recent decisions affecting current work:
 | Replace model with tier | 04-01 | Native API uses tier abstraction, not direct model names |
 | Model injection pattern | 04-01 | Handler determines model, injected into provider request |
 | Temporary tier mapping | 04-01 | Hardcoded tier->model until TierRouter in Plan 02/03 |
+| Static cache key for tier config | 04-01b | Global config, not per-user, uses static string |
+| 30-minute tier config TTL | 04-01b | Balance between freshness and Zion API load |
 | Cost-weighted selection | 04-02 | Probabilistic selection favors cheaper models |
 | Exponential backoff for health | 04-02 | 30s initial, 2x multiplier, 5min max per decisions |
 | Fail explicit when Zion unavailable | 04-03 | Return 503, don't use hardcoded fallback per decisions |
@@ -86,5 +88,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-01
-Stopped at: Completed 04-01-PLAN.md (Foundation Types)
+Stopped at: Completed 04-01b-PLAN.md (Zion Tier Config)
 Resume file: .planning/phases/04-tier-routing/04-02-PLAN.md
