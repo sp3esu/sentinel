@@ -12,7 +12,7 @@ This roadmap delivers a provider-agnostic LLM API layer for Mindsmith. Starting 
 
 - [x] **Phase 1: Types and Translation** - Define unified message format and translate to/from OpenAI
 - [x] **Phase 2: API Endpoints** - Create /native/* routes with basic request handling
-- [ ] **Phase 3: Session Management** - Track conversations with provider stickiness
+- [x] **Phase 3: Session Management** - Track conversations with provider stickiness
 - [ ] **Phase 4: Tier Routing** - Map complexity tiers to models with config from Zion
 - [ ] **Phase 5: Tool Calling** - Unified tool format with schema translation
 - [ ] **Phase 6: Documentation** - OpenAPI spec with protected docs endpoint
@@ -65,7 +65,7 @@ Plans:
 
 Plans:
 - [x] 03-01-PLAN.md - Session storage foundation: Session struct, SessionManager, config (Wave 1)
-- [ ] 03-02-PLAN.md - Handler integration: AppState wiring, request field, tests (Wave 2)
+- [x] 03-02-PLAN.md - Handler integration: AppState wiring, request field, tests (Wave 2)
 
 ### Phase 4: Tier Routing
 **Goal**: Map complexity tiers to specific models based on configuration from Zion
@@ -125,7 +125,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 |-------|----------------|--------|-----------|
 | 1. Types and Translation | 4/4 | Complete | 2026-01-31 |
 | 2. API Endpoints | 2/2 | Complete | 2026-02-01 |
-| 3. Session Management | 1/2 | In progress | - |
+| 3. Session Management | 2/2 | Complete | 2026-02-01 |
 | 4. Tier Routing | 0/3 | Not started | - |
 | 5. Tool Calling | 0/3 | Not started | - |
 | 6. Documentation | 0/2 | Not started | - |

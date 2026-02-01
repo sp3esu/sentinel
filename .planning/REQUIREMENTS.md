@@ -32,10 +32,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Session Management
 
-- [ ] **SESS-01**: Conversation ID tracks session
-- [ ] **SESS-02**: Provider selection stored per session in Redis
-- [ ] **SESS-03**: Same provider used for all requests in a session
-- [ ] **SESS-04**: New session triggers fresh provider selection
+- [x] **SESS-01**: Conversation ID tracks session
+- [x] **SESS-02**: Provider selection stored per session in Redis
+- [x] **SESS-03**: Same provider used for all requests in a session
+- [x] **SESS-04**: New session triggers fresh provider selection
 
 ### Tier Routing
 
@@ -115,10 +115,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TOOL-04 | Phase 5 | Pending |
 | TOOL-05 | Phase 5 | Pending |
 | TOOL-06 | Phase 5 | Pending |
-| SESS-01 | Phase 3 | Pending |
-| SESS-02 | Phase 3 | Pending |
-| SESS-03 | Phase 3 | Pending |
-| SESS-04 | Phase 3 | Pending |
+| SESS-01 | Phase 3 | Complete |
+| SESS-02 | Phase 3 | Complete |
+| SESS-03 | Phase 3 | Complete |
+| SESS-04 | Phase 3 | Complete |
 | TIER-01 | Phase 4 | Pending |
 | TIER-02 | Phase 4 | Pending |
 | TIER-03 | Phase 4 | Pending |
