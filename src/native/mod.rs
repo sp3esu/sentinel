@@ -6,6 +6,7 @@
 pub mod error;
 pub mod request;
 pub mod response;
+pub mod session;
 pub mod streaming;
 pub mod translate;
 pub mod types;
@@ -15,4 +16,5 @@ pub use request::{ChatCompletionRequest, StopSequence};
 pub use response::{
     ChatCompletionResponse, Choice, ChoiceMessage, Delta, StreamChoice, StreamChunk, Usage,
 };
+pub use session::{Session, SessionManager};
 pub use types::{Content, ContentPart, ImageUrl, Message, Role};

@@ -140,6 +140,11 @@ pub mod keys {
     pub fn user_profile(jwt_hash: &str) -> String {
         format!("sentinel:profile:{}", jwt_hash)
     }
+
+    /// Session cache key for provider stickiness
+    pub fn session(conversation_id: &str) -> String {
+        format!("sentinel:session:{}", conversation_id)
+    }
 }
 
 #[cfg(test)]
@@ -230,10 +235,67 @@ mod tests {
         let limits_key = keys::user_limits(id);
         let jwt_key = keys::jwt_validation(id);
         let profile_key = keys::user_profile(id);
+        let session_key = keys::session(id);
 
         assert_ne!(limits_key, jwt_key);
         assert_ne!(limits_key, profile_key);
+        assert_ne!(limits_key, session_key);
         assert_ne!(jwt_key, profile_key);
+        assert_ne!(jwt_key, session_key);
+        assert_ne!(profile_key, session_key);
+    }
+
+    // ===========================================
+    // Session Key Tests
+    // ===========================================
+
+    #[test]
+    fn test_session_key_format() {
+        let key = keys::session("conv-123");
+        assert_eq!(key, "sentinel:session:conv-123");
+    }
+
+    #[test]
+    fn test_session_key_prefix() {
+        let key = keys::session("test-conv");
+        assert!(key.starts_with("sentinel:session:"));
+        assert!(key.ends_with("test-conv"));
+    }
+
+    #[test]
+    fn test_session_key_empty_id() {
+        // Edge case: empty conversation ID
+        let key = keys::session("");
+        assert_eq!(key, "sentinel:session:");
+    }
+
+    #[test]
+    fn test_session_key_uuid() {
+        // UUIDs are common conversation IDs
+        let key = keys::session("550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(key, "sentinel:session:550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn test_session_key_special_characters() {
+        // Special characters in conversation IDs
+        let key = keys::session("conv:with:colons");
+        assert_eq!(key, "sentinel:session:conv:with:colons");
+
+        let key = keys::session("conv-with-dashes");
+        assert_eq!(key, "sentinel:session:conv-with-dashes");
+
+        let key = keys::session("conv_with_underscores");
+        assert_eq!(key, "sentinel:session:conv_with_underscores");
+    }
+
+    #[test]
+    fn test_session_key_consistency() {
+        // Same input should always produce same output
+        let conv_id = "consistent_conv_id";
+        let key1 = keys::session(conv_id);
+        let key2 = keys::session(conv_id);
+        assert_eq!(key1, key2);
     }
 
     #[test]
