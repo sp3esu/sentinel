@@ -47,6 +47,7 @@ impl DebugTestHarness {
             openai_api_key: Some(constants::TEST_OPENAI_API_KEY.to_string()),
             cache_ttl_seconds: 60,
             jwt_cache_ttl_seconds: 60,
+            session_ttl_seconds: 86400,
             debug_enabled,
         };
 

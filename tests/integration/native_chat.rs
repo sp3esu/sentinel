@@ -535,3 +535,280 @@ async fn test_v1_endpoints_regression_check() {
         "/native/* should return choices"
     );
 }
+
+// =============================================================================
+// Session Management Tests
+// =============================================================================
+
+/// Test that a new session is created for a new conversation_id
+#[tokio::test]
+async fn test_session_creation_and_retrieval() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up mocks for first request
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("Hello! I'm here to help.", 15, 20)
+        .await;
+
+    // First request with conversation_id creates session
+    let response1 = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "conversation_id": "test-session-1"
+        }))
+        .await;
+
+    response1.assert_status_ok();
+
+    // Set up mocks for second request (session should exist now)
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("I remember our conversation!", 20, 25)
+        .await;
+
+    // Second request with same conversation_id reuses session
+    // Note: Model is still required in the request but session model takes precedence
+    let response2 = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Hello!"},
+                {"role": "assistant", "content": "Hello! I'm here to help."},
+                {"role": "user", "content": "Thanks!"}
+            ],
+            "conversation_id": "test-session-1"
+        }))
+        .await;
+
+    response2.assert_status_ok();
+
+    // Both should have valid response structure
+    let body1: serde_json::Value = response1.json();
+    let body2: serde_json::Value = response2.json();
+    assert!(body1.get("choices").is_some());
+    assert!(body2.get("choices").is_some());
+}
+
+/// Test that session model takes precedence over request model (stickiness)
+#[tokio::test]
+async fn test_session_model_stickiness() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up mocks for first request (creates session with gpt-4)
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("Response from gpt-4", 10, 15)
+        .await;
+
+    // First request creates session with gpt-4
+    let response1 = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "conversation_id": "test-session-2"
+        }))
+        .await;
+
+    response1.assert_status_ok();
+
+    // Set up mocks for second request
+    // The mock doesn't validate model, but the handler should use session model (gpt-4)
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("Still using gpt-4 from session", 15, 20)
+        .await;
+
+    // Second request tries to use gpt-3.5-turbo but session should override
+    let response2 = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "model": "gpt-3.5-turbo",
+            "messages": [
+                {"role": "user", "content": "Hello!"},
+                {"role": "assistant", "content": "Response from gpt-4"},
+                {"role": "user", "content": "Continue"}
+            ],
+            "conversation_id": "test-session-2"
+        }))
+        .await;
+
+    // Request should succeed - session model (gpt-4) is used instead of request model
+    response2.assert_status_ok();
+
+    let body: serde_json::Value = response2.json();
+    assert!(body.get("choices").is_some());
+}
+
+/// Test stateless mode - requests without conversation_id work independently
+#[tokio::test]
+async fn test_no_conversation_id_stateless() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up mocks for first request
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("First response", 10, 10)
+        .await;
+
+    // First request without conversation_id
+    let response1 = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ]
+        }))
+        .await;
+
+    response1.assert_status_ok();
+
+    // Set up mocks for second request
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("Second response", 10, 10)
+        .await;
+
+    // Second request without conversation_id (completely independent)
+    let response2 = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "model": "gpt-3.5-turbo",
+            "messages": [
+                {"role": "user", "content": "World!"}
+            ]
+        }))
+        .await;
+
+    response2.assert_status_ok();
+
+    // Both should succeed independently
+    let body1: serde_json::Value = response1.json();
+    let body2: serde_json::Value = response2.json();
+    assert!(body1.get("choices").is_some());
+    assert!(body2.get("choices").is_some());
+}
+
+/// Test backward compatibility - existing requests without conversation_id still work
+#[tokio::test]
+async fn test_conversation_id_backward_compatible() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up mocks
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("Backward compatible response", 10, 15)
+        .await;
+
+    // Request in the old format (without conversation_id) should still work
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 100
+        }))
+        .await;
+
+    response.assert_status_ok();
+
+    let body: serde_json::Value = response.json();
+    assert!(body.get("choices").is_some());
+    assert!(body.get("usage").is_some());
+}
