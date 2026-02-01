@@ -24,6 +24,7 @@ use anyhow::Result;
 
 pub use crate::cache::{RedisCache, SubscriptionCache};
 pub use crate::config::Config;
+pub use crate::native::SessionManager;
 pub use crate::proxy::{AiProvider, OpenAIProvider};
 pub use crate::tokens::SharedTokenCounter;
 pub use crate::usage::{BatchingUsageTracker, UsageTracker};
@@ -46,6 +47,8 @@ pub struct AppState {
     pub ai_provider: Arc<dyn AiProvider>,
     /// Token counter for estimating token usage with tiktoken-rs
     pub token_counter: SharedTokenCounter,
+    /// Session manager for conversation-based provider stickiness
+    pub session_manager: Arc<SessionManager>,
 }
 
 impl AppState {
@@ -69,10 +72,16 @@ impl AppState {
 
         // Initialize subscription cache
         let subscription_cache = Arc::new(SubscriptionCache::new(
-            redis_cache,
+            redis_cache.clone(),
             zion_client.clone(),
             config.cache_ttl_seconds,
             config.jwt_cache_ttl_seconds,
+        ));
+
+        // Initialize session manager for provider stickiness
+        let session_manager = Arc::new(SessionManager::new(
+            redis_cache,
+            config.session_ttl_seconds,
         ));
 
         // Initialize usage tracker (synchronous, for streaming)
@@ -106,6 +115,7 @@ impl AppState {
             batching_tracker,
             ai_provider,
             token_counter,
+            session_manager,
         })
     }
 
@@ -134,10 +144,16 @@ impl AppState {
 
         // Create subscription cache with in-memory backend
         let subscription_cache = Arc::new(SubscriptionCache::new_for_testing(
-            in_memory_cache,
+            in_memory_cache.clone(),
             zion_client.clone(),
             60, // 1 minute TTL for limits
             60, // 1 minute TTL for JWT
+        ));
+
+        // Create session manager with in-memory backend for testing
+        let session_manager = Arc::new(SessionManager::new_for_testing(
+            in_memory_cache,
+            config.session_ttl_seconds,
         ));
 
         Self {
@@ -151,6 +167,7 @@ impl AppState {
             batching_tracker,
             ai_provider,
             token_counter,
+            session_manager,
         }
     }
 }

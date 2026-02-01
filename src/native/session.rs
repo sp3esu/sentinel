@@ -7,13 +7,59 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tracing::{debug, instrument};
 
 use crate::{
     cache::redis::{keys, RedisCache},
     error::AppResult,
 };
+
+#[cfg(any(test, feature = "test-utils"))]
+use crate::cache::InMemoryCache;
+
+/// Cache backend abstraction for SessionManager
+///
+/// This enum allows SessionManager to work with either Redis or in-memory
+/// caching, enabling fully isolated integration tests.
+pub enum SessionCacheBackend {
+    /// Redis-based cache for production use
+    Redis(Arc<RedisCache>),
+    /// In-memory cache for testing (only available with test-utils feature)
+    #[cfg(any(test, feature = "test-utils"))]
+    InMemory(Arc<InMemoryCache>),
+}
+
+impl SessionCacheBackend {
+    async fn get<T: DeserializeOwned>(&self, key: &str) -> AppResult<Option<T>> {
+        match self {
+            SessionCacheBackend::Redis(cache) => cache.get(key).await,
+            #[cfg(any(test, feature = "test-utils"))]
+            SessionCacheBackend::InMemory(cache) => cache.get(key).await,
+        }
+    }
+
+    async fn set_with_ttl<T: Serialize>(
+        &self,
+        key: &str,
+        value: &T,
+        ttl_seconds: u64,
+    ) -> AppResult<()> {
+        match self {
+            SessionCacheBackend::Redis(cache) => cache.set_with_ttl(key, value, ttl_seconds).await,
+            #[cfg(any(test, feature = "test-utils"))]
+            SessionCacheBackend::InMemory(cache) => cache.set_with_ttl(key, value, ttl_seconds).await,
+        }
+    }
+
+    async fn expire(&self, key: &str, seconds: u64) -> AppResult<()> {
+        match self {
+            SessionCacheBackend::Redis(cache) => cache.expire(key, seconds).await,
+            #[cfg(any(test, feature = "test-utils"))]
+            SessionCacheBackend::InMemory(cache) => cache.expire(key, seconds).await,
+        }
+    }
+}
 
 /// Session data stored in Redis
 ///
@@ -39,18 +85,30 @@ pub struct Session {
 /// Wraps Redis operations with session-specific logic.
 /// Follows the SubscriptionCache pattern for consistency.
 pub struct SessionManager {
-    cache: Arc<RedisCache>,
+    cache: SessionCacheBackend,
     session_ttl: u64,
 }
 
 impl SessionManager {
-    /// Create a new session manager
+    /// Create a new session manager with Redis backend
     ///
     /// # Arguments
     /// * `cache` - Redis cache reference
     /// * `session_ttl` - TTL in seconds (typically 24 hours = 86400)
     pub fn new(cache: Arc<RedisCache>, session_ttl: u64) -> Self {
-        Self { cache, session_ttl }
+        Self {
+            cache: SessionCacheBackend::Redis(cache),
+            session_ttl,
+        }
+    }
+
+    /// Create a new session manager with in-memory backend for testing
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_for_testing(cache: Arc<InMemoryCache>, session_ttl: u64) -> Self {
+        Self {
+            cache: SessionCacheBackend::InMemory(cache),
+            session_ttl,
+        }
     }
 
     /// Get existing session by conversation ID
