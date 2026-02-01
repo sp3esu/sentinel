@@ -8,7 +8,9 @@ use serde_json::json;
 use super::{MessageTranslator, TranslationError};
 use crate::native::request::ChatCompletionRequest;
 use crate::native::response::{ChatCompletionResponse, Choice, ChoiceMessage, Usage};
-use crate::native::types::{Message, Role};
+use crate::native::types::{
+    validate_tool_name, validate_tool_schema, Message, Role, ToolCall, ToolCallFunction, ToolChoice,
+};
 
 /// OpenAI API translator
 ///
@@ -82,6 +84,49 @@ impl MessageTranslator for OpenAITranslator {
 
         if request.stream {
             obj["stream"] = json!(true);
+        }
+
+        // Add tools if present and non-empty
+        if let Some(ref tools) = request.tools {
+            if !tools.is_empty() {
+                // Validate each tool definition
+                for tool in tools {
+                    if !validate_tool_name(&tool.function.name) {
+                        return Err(TranslationError::InvalidToolDefinition(format!(
+                            "Invalid tool name '{}': must contain only alphanumeric characters and underscores",
+                            tool.function.name
+                        )));
+                    }
+                    if tool.function.description.is_empty() {
+                        return Err(TranslationError::InvalidToolDefinition(format!(
+                            "Tool '{}' has empty description",
+                            tool.function.name
+                        )));
+                    }
+                    if let Err(e) = validate_tool_schema(&tool.function.parameters) {
+                        return Err(TranslationError::InvalidToolDefinition(format!(
+                            "Tool '{}' has invalid schema: {}",
+                            tool.function.name, e
+                        )));
+                    }
+                }
+                // Tools are already OpenAI-compatible, serialize directly
+                obj["tools"] = serde_json::to_value(tools)?;
+            }
+        }
+
+        // Add tool_choice if present
+        if let Some(ref tool_choice) = request.tool_choice {
+            let choice_value = match tool_choice {
+                ToolChoice::Auto => json!("auto"),
+                ToolChoice::None => json!("none"),
+                ToolChoice::Required => json!("required"),
+                ToolChoice::Function { name } => json!({
+                    "type": "function",
+                    "function": { "name": name }
+                }),
+            };
+            obj["tool_choice"] = choice_value;
         }
 
         Ok(obj)
@@ -166,7 +211,11 @@ impl MessageTranslator for OpenAITranslator {
 
             choices.push(Choice {
                 index,
-                message: ChoiceMessage { role, content },
+                message: ChoiceMessage {
+                    role,
+                    content,
+                    tool_calls: None,
+                },
                 finish_reason,
             });
         }
@@ -232,6 +281,7 @@ mod tests {
             content: Content::Text(content.to_string()),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         }
     }
 
@@ -250,6 +300,8 @@ mod tests {
             stop: None,
             stream: false,
             conversation_id: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let result = translator.translate_request(&request).unwrap();
@@ -278,6 +330,8 @@ mod tests {
             stop: None,
             stream: true,
             conversation_id: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let result = translator.translate_request(&request).unwrap();
@@ -305,6 +359,8 @@ mod tests {
             stop: None,
             stream: false,
             conversation_id: None,
+            tools: None,
+            tool_choice: None,
         };
 
         let result = translator.translate_request(&request);
@@ -386,6 +442,8 @@ mod tests {
             stop: None,
             stream: false,
             conversation_id: None,
+            tools: None,
+            tool_choice: None,
         };
 
         // Empty messages should translate without error
@@ -414,6 +472,8 @@ mod tests {
             stop: None,
             stream: false,
             conversation_id: None,
+            tools: None,
+            tool_choice: None,
         };
 
         // Multiple system messages at start should be valid
@@ -472,5 +532,248 @@ mod tests {
         let result = translator.translate_response(response).unwrap();
         assert_eq!(result.choices[0].message.content, None);
         assert_eq!(result.choices[0].finish_reason, Some("tool_calls".to_string()));
+    }
+
+    // =============================================================================
+    // Tool Translation Tests
+    // =============================================================================
+
+    #[test]
+    fn test_translate_request_with_valid_tools() {
+        use crate::native::types::{FunctionDefinition, ToolDefinition};
+
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![make_message(Role::User, "What's the weather?")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: Some(vec![ToolDefinition {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: "get_weather".to_string(),
+                    description: "Get the current weather".to_string(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "location": {"type": "string"}
+                        },
+                        "required": ["location"]
+                    }),
+                },
+            }]),
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request).unwrap();
+        let tools = result.get("tools").unwrap().as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn test_translate_request_with_invalid_tool_name() {
+        use crate::native::types::{FunctionDefinition, ToolDefinition};
+
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![make_message(Role::User, "Hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: Some(vec![ToolDefinition {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: "invalid-name".to_string(), // Invalid: contains hyphen
+                    description: "Some description".to_string(),
+                    parameters: json!({"type": "object"}),
+                },
+            }]),
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request);
+        assert!(matches!(
+            result,
+            Err(TranslationError::InvalidToolDefinition(msg)) if msg.contains("invalid-name")
+        ));
+    }
+
+    #[test]
+    fn test_translate_request_with_empty_tool_description() {
+        use crate::native::types::{FunctionDefinition, ToolDefinition};
+
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![make_message(Role::User, "Hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: Some(vec![ToolDefinition {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: "my_tool".to_string(),
+                    description: "".to_string(), // Empty description
+                    parameters: json!({"type": "object"}),
+                },
+            }]),
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request);
+        assert!(matches!(
+            result,
+            Err(TranslationError::InvalidToolDefinition(msg)) if msg.contains("empty description")
+        ));
+    }
+
+    #[test]
+    fn test_translate_request_with_invalid_tool_schema() {
+        use crate::native::types::{FunctionDefinition, ToolDefinition};
+
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![make_message(Role::User, "Hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: Some(vec![ToolDefinition {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: "my_tool".to_string(),
+                    description: "A tool".to_string(),
+                    parameters: json!({"type": "string"}), // Invalid: must be object
+                },
+            }]),
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request);
+        assert!(matches!(
+            result,
+            Err(TranslationError::InvalidToolDefinition(msg)) if msg.contains("invalid schema")
+        ));
+    }
+
+    #[test]
+    fn test_translate_request_with_empty_tools_array() {
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![make_message(Role::User, "Hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: Some(vec![]),
+            tool_choice: None,
+        };
+
+        let result = translator.translate_request(&request).unwrap();
+        // Empty tools array should not add tools key
+        assert!(result.get("tools").is_none());
+    }
+
+    #[test]
+    fn test_translate_request_tool_choice_auto() {
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![make_message(Role::User, "Hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: Some(ToolChoice::Auto),
+        };
+
+        let result = translator.translate_request(&request).unwrap();
+        assert_eq!(result.get("tool_choice").unwrap(), "auto");
+    }
+
+    #[test]
+    fn test_translate_request_tool_choice_none() {
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![make_message(Role::User, "Hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: Some(ToolChoice::None),
+        };
+
+        let result = translator.translate_request(&request).unwrap();
+        assert_eq!(result.get("tool_choice").unwrap(), "none");
+    }
+
+    #[test]
+    fn test_translate_request_tool_choice_required() {
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![make_message(Role::User, "Hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: Some(ToolChoice::Required),
+        };
+
+        let result = translator.translate_request(&request).unwrap();
+        assert_eq!(result.get("tool_choice").unwrap(), "required");
+    }
+
+    #[test]
+    fn test_translate_request_tool_choice_function() {
+        let translator = OpenAITranslator::new();
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![make_message(Role::User, "Hi")],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+            tools: None,
+            tool_choice: Some(ToolChoice::Function {
+                name: "get_weather".to_string(),
+            }),
+        };
+
+        let result = translator.translate_request(&request).unwrap();
+        let choice = result.get("tool_choice").unwrap();
+        assert_eq!(choice["type"], "function");
+        assert_eq!(choice["function"]["name"], "get_weather");
     }
 }

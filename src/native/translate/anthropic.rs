@@ -159,6 +159,7 @@ mod tests {
             content: Content::Text(text.to_string()),
             name: None,
             tool_call_id: None,
+            tool_calls: None,
         }
     }
 

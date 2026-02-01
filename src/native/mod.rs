@@ -14,7 +14,11 @@ pub mod types;
 // Re-export key types for convenience
 pub use request::{ChatCompletionRequest, StopSequence};
 pub use response::{
-    ChatCompletionResponse, Choice, ChoiceMessage, Delta, StreamChoice, StreamChunk, Usage,
+    ChatCompletionResponse, Choice, ChoiceMessage, Delta, StreamChoice, StreamChunk,
+    ToolCallDelta, ToolCallFunctionDelta, Usage,
 };
 pub use session::{Session, SessionManager};
-pub use types::{Content, ContentPart, ImageUrl, Message, Role};
+pub use types::{
+    Content, ContentPart, FunctionDefinition, ImageUrl, Message, Role, ToolCall,
+    ToolCallFunction, ToolChoice, ToolDefinition, ToolResult, ToolResultContent,
+};

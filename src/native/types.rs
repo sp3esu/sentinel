@@ -87,9 +87,12 @@ pub struct Message {
     /// Optional name of the author (for multi-user scenarios)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Tool call ID this message is responding to
+    /// Tool call ID this message is responding to (for tool messages)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Tool calls made by the assistant (for assistant messages)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 /// Complexity tier for model routing
@@ -396,6 +399,7 @@ mod tests {
             content: Content::Text("Hello!".to_string()),
             name: Some("Alice".to_string()),
             tool_call_id: None,
+            tool_calls: None,
         };
         let json = serde_json::to_string(&message).unwrap();
         let deserialized: Message = serde_json::from_str(&json).unwrap();

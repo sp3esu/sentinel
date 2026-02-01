@@ -262,6 +262,7 @@ mod tests {
                 delta: Delta {
                     role: None,
                     content: Some(content.to_string()),
+                    tool_calls: None,
                 },
                 finish_reason: None,
             }],
@@ -340,6 +341,7 @@ mod tests {
         let delta = Delta {
             role: Some(Role::Assistant),
             content: Some("Test content".to_string()),
+            tool_calls: None,
         };
 
         let chunk = create_chunk_with_metadata(&metadata, delta, None, None);

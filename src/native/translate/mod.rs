@@ -46,6 +46,18 @@ pub enum TranslationError {
     /// Feature not yet implemented (used for scaffold methods)
     #[error("Not implemented: {0}")]
     NotImplemented(String),
+
+    /// Invalid tool definition
+    #[error("Invalid tool definition: {0}")]
+    InvalidToolDefinition(String),
+
+    /// Malformed arguments in tool call response
+    #[error("Malformed tool call arguments: {0}")]
+    MalformedArguments(String),
+
+    /// Tool call ID not found in conversation history
+    #[error("No tool call found in history for tool_call_id: {0}")]
+    MissingToolCallInHistory(String),
 }
 
 /// Trait for translating between Native API format and provider-specific formats
