@@ -348,7 +348,7 @@ async fn execute_with_retry(
                 .tier_router
                 .record_success(&selection.provider, &selection.model);
 
-            let native_response = translator
+            let (native_response, _id_mapping) = translator
                 .translate_response(provider_response)
                 .map_err(|e| {
                     NativeErrorResponse::internal(format!("Response translation failed: {}", e))
@@ -399,7 +399,7 @@ async fn execute_with_retry(
                                 .tier_router
                                 .record_success(&alternative.provider, &alternative.model);
 
-                            let native_response = translator
+                            let (native_response, _id_mapping) = translator
                                 .translate_response(provider_response)
                                 .map_err(|e| {
                                     NativeErrorResponse::internal(format!(

@@ -127,7 +127,7 @@ impl MessageTranslator for AnthropicTranslator {
     fn translate_response(
         &self,
         _response: serde_json::Value,
-    ) -> Result<ChatCompletionResponse, TranslationError> {
+    ) -> Result<(ChatCompletionResponse, super::ToolCallIdMapping), TranslationError> {
         // Actual translation not implemented yet - this is a scaffold for v2
         Err(TranslationError::NotImplemented(
             "Anthropic response translation".to_string(),

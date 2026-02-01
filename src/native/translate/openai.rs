@@ -5,7 +5,7 @@
 
 use serde_json::json;
 
-use super::{MessageTranslator, TranslationError};
+use super::{MessageTranslator, ToolCallIdMapping, TranslationError};
 use crate::native::request::ChatCompletionRequest;
 use crate::native::response::{ChatCompletionResponse, Choice, ChoiceMessage, Usage};
 use crate::native::types::{
@@ -135,7 +135,9 @@ impl MessageTranslator for OpenAITranslator {
     fn translate_response(
         &self,
         response: serde_json::Value,
-    ) -> Result<ChatCompletionResponse, TranslationError> {
+    ) -> Result<(ChatCompletionResponse, ToolCallIdMapping), TranslationError> {
+        let mut id_mapping = ToolCallIdMapping::new();
+
         // Extract required fields from OpenAI response
         let id = response
             .get("id")
@@ -204,6 +206,69 @@ impl MessageTranslator for OpenAITranslator {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
+            // Parse tool_calls if present
+            let tool_calls = if let Some(tc_array) = message_value.get("tool_calls") {
+                let tc_array = tc_array.as_array().ok_or_else(|| {
+                    TranslationError::InvalidMessageFormat("tool_calls is not an array".to_string())
+                })?;
+
+                let mut calls = Vec::with_capacity(tc_array.len());
+                for tc in tc_array {
+                    // Extract provider's tool call ID
+                    let provider_id = tc
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            TranslationError::MissingRequiredField("tool_call.id".to_string())
+                        })?;
+
+                    // Generate Sentinel ID and map it
+                    let sentinel_id = id_mapping.generate_sentinel_id(provider_id);
+
+                    // Extract function details
+                    let function = tc.get("function").ok_or_else(|| {
+                        TranslationError::MissingRequiredField("tool_call.function".to_string())
+                    })?;
+
+                    let name = function
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            TranslationError::MissingRequiredField(
+                                "tool_call.function.name".to_string(),
+                            )
+                        })?
+                        .to_string();
+
+                    // Arguments come as a JSON string from OpenAI - parse to JSON object
+                    let arguments_str = function
+                        .get("arguments")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            TranslationError::MissingRequiredField(
+                                "tool_call.function.arguments".to_string(),
+                            )
+                        })?;
+
+                    let arguments: serde_json::Value =
+                        serde_json::from_str(arguments_str).map_err(|e| {
+                            TranslationError::MalformedArguments(format!(
+                                "Failed to parse arguments for tool call '{}': {}",
+                                name, e
+                            ))
+                        })?;
+
+                    calls.push(ToolCall {
+                        id: sentinel_id,
+                        call_type: "function".to_string(),
+                        function: ToolCallFunction { name, arguments },
+                    });
+                }
+                Some(calls)
+            } else {
+                None
+            };
+
             let finish_reason = choice_value
                 .get("finish_reason")
                 .and_then(|v| v.as_str())
@@ -214,7 +279,7 @@ impl MessageTranslator for OpenAITranslator {
                 message: ChoiceMessage {
                     role,
                     content,
-                    tool_calls: None,
+                    tool_calls,
                 },
                 finish_reason,
             });
@@ -243,18 +308,21 @@ impl MessageTranslator for OpenAITranslator {
             .ok_or_else(|| TranslationError::MissingRequiredField("usage.total_tokens".to_string()))?
             as u32;
 
-        Ok(ChatCompletionResponse {
-            id,
-            object,
-            created,
-            model,
-            choices,
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens,
+        Ok((
+            ChatCompletionResponse {
+                id,
+                object,
+                created,
+                model,
+                choices,
+                usage: Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                },
             },
-        })
+            id_mapping,
+        ))
     }
 
     fn translate_stop_reason(&self, reason: &str) -> String {
@@ -393,7 +461,7 @@ mod tests {
             }
         });
 
-        let result = translator.translate_response(response).unwrap();
+        let (result, mapping) = translator.translate_response(response).unwrap();
 
         assert_eq!(result.id, "chatcmpl-123");
         assert_eq!(result.object, "chat.completion");
@@ -410,6 +478,8 @@ mod tests {
         assert_eq!(result.usage.prompt_tokens, 9);
         assert_eq!(result.usage.completion_tokens, 12);
         assert_eq!(result.usage.total_tokens, 21);
+        // No tool calls, so mapping should be empty
+        assert!(mapping.is_empty());
     }
 
     #[test]
@@ -529,7 +599,7 @@ mod tests {
             }
         });
 
-        let result = translator.translate_response(response).unwrap();
+        let (result, _mapping) = translator.translate_response(response).unwrap();
         assert_eq!(result.choices[0].message.content, None);
         assert_eq!(result.choices[0].finish_reason, Some("tool_calls".to_string()));
     }
@@ -775,5 +845,246 @@ mod tests {
         let choice = result.get("tool_choice").unwrap();
         assert_eq!(choice["type"], "function");
         assert_eq!(choice["function"]["name"], "get_weather");
+    }
+
+    // =============================================================================
+    // Tool Call Response Translation Tests
+    // =============================================================================
+
+    #[test]
+    fn test_translate_response_with_tool_calls() {
+        let translator = OpenAITranslator::new();
+        let response = json!({
+            "id": "chatcmpl-456",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "gpt-4-0613",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call_openai_abc123",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_weather",
+                                    "arguments": "{\"location\": \"London\"}"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+
+        let (result, mapping) = translator.translate_response(response).unwrap();
+
+        assert_eq!(result.choices[0].message.content, None);
+        assert_eq!(result.choices[0].finish_reason, Some("tool_calls".to_string()));
+
+        let tool_calls = result.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert!(tool_calls[0].id.starts_with("call_"));
+        assert_eq!(tool_calls[0].call_type, "function");
+        assert_eq!(tool_calls[0].function.name, "get_weather");
+        assert_eq!(tool_calls[0].function.arguments, json!({"location": "London"}));
+
+        // Mapping should link Sentinel ID to provider ID
+        assert!(!mapping.is_empty());
+        assert_eq!(
+            mapping.get_provider_id(&tool_calls[0].id),
+            Some(&"call_openai_abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_translate_response_with_multiple_parallel_tool_calls() {
+        let translator = OpenAITranslator::new();
+        let response = json!({
+            "id": "chatcmpl-789",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "gpt-4-0613",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call_provider_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_weather",
+                                    "arguments": "{\"location\": \"London\"}"
+                                }
+                            },
+                            {
+                                "id": "call_provider_2",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_time",
+                                    "arguments": "{\"timezone\": \"UTC\"}"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 15,
+                "completion_tokens": 10,
+                "total_tokens": 25
+            }
+        });
+
+        let (result, mapping) = translator.translate_response(response).unwrap();
+
+        let tool_calls = result.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 2);
+
+        // Each tool call should have unique Sentinel ID
+        assert_ne!(tool_calls[0].id, tool_calls[1].id);
+        assert!(tool_calls[0].id.starts_with("call_"));
+        assert!(tool_calls[1].id.starts_with("call_"));
+
+        // Verify mappings
+        assert_eq!(
+            mapping.get_provider_id(&tool_calls[0].id),
+            Some(&"call_provider_1".to_string())
+        );
+        assert_eq!(
+            mapping.get_provider_id(&tool_calls[1].id),
+            Some(&"call_provider_2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_translate_response_malformed_arguments() {
+        let translator = OpenAITranslator::new();
+        let response = json!({
+            "id": "chatcmpl-error",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "gpt-4-0613",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call_bad",
+                                "type": "function",
+                                "function": {
+                                    "name": "some_func",
+                                    "arguments": "not valid json {"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+
+        let result = translator.translate_response(response);
+        assert!(matches!(
+            result,
+            Err(TranslationError::MalformedArguments(msg)) if msg.contains("some_func")
+        ));
+    }
+
+    #[test]
+    fn test_translate_response_without_tool_calls_empty_mapping() {
+        let translator = OpenAITranslator::new();
+        let response = json!({
+            "id": "chatcmpl-normal",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "gpt-4-0613",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Hello! I'm a helpful assistant."
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 8,
+                "total_tokens": 13
+            }
+        });
+
+        let (result, mapping) = translator.translate_response(response).unwrap();
+
+        assert_eq!(result.choices[0].message.content, Some("Hello! I'm a helpful assistant.".to_string()));
+        assert!(result.choices[0].message.tool_calls.is_none());
+        assert!(mapping.is_empty());
+    }
+
+    #[test]
+    fn test_translate_response_arguments_parsed_as_json_object() {
+        let translator = OpenAITranslator::new();
+        let response = json!({
+            "id": "chatcmpl-obj",
+            "object": "chat.completion",
+            "created": 1677652288,
+            "model": "gpt-4",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call_xyz",
+                                "type": "function",
+                                "function": {
+                                    "name": "search",
+                                    "arguments": "{\"query\": \"rust programming\", \"limit\": 10}"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            }
+        });
+
+        let (result, _mapping) = translator.translate_response(response).unwrap();
+
+        let tool_calls = result.choices[0].message.tool_calls.as_ref().unwrap();
+        // Arguments should be parsed JSON, not a string
+        assert!(tool_calls[0].function.arguments.is_object());
+        assert_eq!(tool_calls[0].function.arguments["query"], "rust programming");
+        assert_eq!(tool_calls[0].function.arguments["limit"], 10);
     }
 }
