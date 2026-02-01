@@ -1,0 +1,934 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Sentinel Native API",
+    "description": "Native API for Sentinel AI Proxy - unified format with tier routing and session management",
+    "contact": {
+      "name": "Sentinel Team"
+    },
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/native/v1/chat/completions": {
+      "post": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Handle native chat completion requests",
+        "description": "Create a chat completion using Sentinel's unified API format.\n\n## Request Modes\n\n**Non-streaming (default):** Returns complete response as JSON when `stream: false` or omitted.\n\n**Streaming:** When `stream: true`, returns Server-Sent Events (SSE) with incremental chunks. Each chunk is prefixed with `data: ` and the stream ends with `data: [DONE]`.\n\n## Tier Selection\n\nThe `tier` field determines model routing:\n- `simple` - Fast, cost-effective model (e.g., GPT-4o-mini) for straightforward tasks\n- `moderate` - Balanced model for general-purpose conversations\n- `complex` - Most capable model for reasoning, analysis, and complex tasks\n\nIf omitted, defaults to `simple`.\n\n## Conversation Context\n\nUse `conversation_id` to maintain context across requests. The server associates this ID with cached context. If omitted, each request is treated as a new conversation.\n\n## Tool Calling\n\nSupports OpenAI-compatible tool calling:\n1. Provide `tools` array with function definitions\n2. Model may respond with `tool_calls` in the message\n3. Send tool results back with `role: tool` messages\n\n## Error Handling\n\n- **400**: Invalid request body, missing required fields, or validation errors\n- **401**: Missing or invalid JWT in Authorization header\n- **403**: User lacks permission or has exceeded quota\n- **429**: Rate limit exceeded (check X-RateLimit-* headers)\n- **500**: Internal server error\n- **502**: Upstream AI provider error (provider field indicates source)\n- **503**: No healthy providers available for the requested tier",
+        "operationId": "createNativeChatCompletion",
+        "requestBody": {
+          "description": "Chat completion request with messages, tier, and optional settings",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request - malformed JSON or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid JWT in Authorization header"
+          },
+          "403": {
+            "description": "Insufficient permissions or quota exceeded"
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Provider error - upstream AI provider failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable - no healthy providers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChatCompletionRequest": {
+        "type": "object",
+        "description": "Chat completion request\n\nUses `deny_unknown_fields` to ensure strict validation - requests with\nunexpected fields will be rejected. This catches typos and enforces the API contract.",
+        "required": [
+          "messages"
+        ],
+        "properties": {
+          "conversation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Conversation ID for session stickiness (optional)\nWhen provided, uses the provider/model from the first request in this conversation.\nWhen absent, triggers fresh provider selection each time.",
+            "example": "conv-550e8400-e29b-41d4-a716-446655440000"
+          },
+          "max_tokens": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Maximum tokens to generate",
+            "example": 1000,
+            "minimum": 1
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "description": "Messages in the conversation"
+          },
+          "stop": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StopSequence",
+                "description": "Stop sequences"
+              }
+            ]
+          },
+          "stream": {
+            "type": "boolean",
+            "description": "Whether to stream the response",
+            "example": false
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Sampling temperature (0.0 to 2.0)",
+            "example": 0.7,
+            "maximum": 2,
+            "minimum": 0
+          },
+          "tier": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Tier",
+                "description": "Complexity tier for model routing (optional, defaults to simple)\n\nControls which model is selected for this request:\n- `simple`: Fast, cost-effective models for straightforward tasks\n- `moderate`: Balanced models for typical assistant interactions\n- `complex`: Most capable models for difficult reasoning tasks"
+              }
+            ]
+          },
+          "tool_choice": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/serde_json.Value",
+                "description": "How the model should use the provided tools"
+              }
+            ]
+          },
+          "tools": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ToolDefinition"
+            },
+            "description": "Tool definitions available to the model"
+          },
+          "top_p": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Nucleus sampling parameter",
+            "example": 0.95,
+            "maximum": 1,
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChatCompletionResponse": {
+        "type": "object",
+        "description": "Chat completion response (non-streaming)",
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "choices",
+          "usage"
+        ],
+        "properties": {
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Choice"
+            },
+            "description": "List of completion choices"
+          },
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp of creation",
+            "example": 1677858242,
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for this completion",
+            "example": "chatcmpl-abc123"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model used for completion",
+            "example": "gpt-4o-mini"
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type (always \"chat.completion\")",
+            "example": "chat.completion"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage",
+            "description": "Token usage statistics"
+          }
+        }
+      },
+      "Choice": {
+        "type": "object",
+        "description": "A completion choice",
+        "required": [
+          "index",
+          "message"
+        ],
+        "properties": {
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reason the generation stopped",
+            "example": "stop"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Index of this choice",
+            "example": 0,
+            "minimum": 0
+          },
+          "message": {
+            "$ref": "#/components/schemas/ChoiceMessage",
+            "description": "The generated message"
+          }
+        }
+      },
+      "ChoiceMessage": {
+        "type": "object",
+        "description": "Message in a completion choice",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Content of the message",
+            "example": "Hello! I'm an AI assistant. How can I help you today?"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Role of the message author"
+          },
+          "tool_calls": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            },
+            "description": "Tool calls made by the assistant"
+          }
+        }
+      },
+      "Content": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Simple text content",
+            "example": "Hello, how can I help you today?"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentPart"
+            },
+            "description": "Multimodal content with text and/or images"
+          }
+        ],
+        "description": "Message content - either plain text or multimodal parts"
+      },
+      "ContentPart": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Text content",
+            "required": [
+              "text",
+              "type"
+            ],
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "The text content",
+                "example": "Hello, how can I help you today?"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Image URL reference",
+            "required": [
+              "image_url",
+              "type"
+            ],
+            "properties": {
+              "image_url": {
+                "$ref": "#/components/schemas/ImageUrl",
+                "description": "The image URL details"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "image_url"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A part of multimodal content"
+      },
+      "Delta": {
+        "type": "object",
+        "description": "Delta content in a streaming chunk",
+        "properties": {
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Content fragment",
+            "example": "Hello"
+          },
+          "role": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Role",
+                "description": "Role (only present in first chunk)"
+              }
+            ]
+          },
+          "tool_calls": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ToolCallDelta"
+            },
+            "description": "Tool call deltas"
+          }
+        }
+      },
+      "FunctionDefinition": {
+        "type": "object",
+        "description": "Function definition within a tool",
+        "required": [
+          "name",
+          "description",
+          "parameters"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "Description of what the function does (required for better LLM performance)",
+            "example": "Get the current weather for a given location"
+          },
+          "name": {
+            "type": "string",
+            "description": "Function name (validated: a-zA-Z0-9_ only)",
+            "example": "get_weather"
+          },
+          "parameters": {
+            "type": "object",
+            "description": "JSON Schema defining the function parameters"
+          }
+        }
+      },
+      "ImageUrl": {
+        "type": "object",
+        "description": "Image URL reference for multimodal content",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Image detail level: \"auto\", \"low\", or \"high\"",
+            "example": "auto"
+          },
+          "url": {
+            "type": "string",
+            "description": "URL of the image (can be data URL or HTTP URL)",
+            "example": "https://example.com/image.png"
+          }
+        }
+      },
+      "Message": {
+        "type": "object",
+        "description": "A chat message with role and content",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/Content",
+            "description": "The content of the message"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional name of the author (for multi-user scenarios)",
+            "example": "Alice"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The role of the message author"
+          },
+          "tool_call_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Tool call ID this message is responding to (for tool messages)",
+            "example": "call_abc123xyz"
+          },
+          "tool_calls": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ToolCall"
+            },
+            "description": "Tool calls made by the assistant (for assistant messages)"
+          }
+        }
+      },
+      "NativeError": {
+        "type": "object",
+        "description": "Native API error with OpenAI-compatible structure",
+        "required": [
+          "message",
+          "type",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Error code for programmatic handling",
+            "example": "invalid_request"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable error message",
+            "example": "Invalid request body: missing required field 'messages'"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Provider hint when error originates from upstream",
+            "example": "openai"
+          },
+          "type": {
+            "type": "string",
+            "description": "Error type category",
+            "example": "invalid_request_error"
+          }
+        }
+      },
+      "NativeErrorResponse": {
+        "type": "object",
+        "description": "Wrapper for error responses matching OpenAI's format",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/NativeError",
+            "description": "The error details"
+          }
+        }
+      },
+      "Role": {
+        "type": "string",
+        "description": "Role of a message participant",
+        "enum": [
+          "system",
+          "user",
+          "assistant",
+          "tool"
+        ],
+        "example": "user"
+      },
+      "StopSequence": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Single stop sequence",
+            "example": "END"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Multiple stop sequences",
+            "example": [
+              "STOP",
+              "END"
+            ]
+          }
+        ],
+        "description": "Stop sequence - can be a single string or array of strings"
+      },
+      "StreamChoice": {
+        "type": "object",
+        "description": "A choice in a streaming chunk",
+        "required": [
+          "index",
+          "delta"
+        ],
+        "properties": {
+          "delta": {
+            "$ref": "#/components/schemas/Delta",
+            "description": "Delta content"
+          },
+          "finish_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reason the generation stopped (only in final chunk)",
+            "example": "stop"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Index of this choice",
+            "example": 0,
+            "minimum": 0
+          }
+        }
+      },
+      "StreamChunk": {
+        "type": "object",
+        "description": "Streaming chunk for chat completion",
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "choices"
+        ],
+        "properties": {
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StreamChoice"
+            },
+            "description": "List of choices with delta content"
+          },
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp of creation",
+            "example": 1677858242,
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for this completion",
+            "example": "chatcmpl-abc123"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model used for completion",
+            "example": "gpt-4o-mini"
+          },
+          "object": {
+            "type": "string",
+            "description": "Object type (always \"chat.completion.chunk\")",
+            "example": "chat.completion.chunk"
+          },
+          "usage": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Usage",
+                "description": "Token usage (only in final chunk when requested)"
+              }
+            ]
+          }
+        }
+      },
+      "Tier": {
+        "type": "string",
+        "description": "Complexity tier for model routing\n\nOrdered from lowest to highest complexity for upgrade comparison.\nImplements PartialOrd so tiers can be compared: Simple < Moderate < Complex.",
+        "enum": [
+          "simple",
+          "moderate",
+          "complex"
+        ],
+        "example": "simple"
+      },
+      "ToolCall": {
+        "type": "object",
+        "description": "A tool call from the assistant",
+        "required": [
+          "id",
+          "type",
+          "function"
+        ],
+        "properties": {
+          "function": {
+            "$ref": "#/components/schemas/ToolCallFunction",
+            "description": "Function call details"
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for this tool call (format: call_{uuid})",
+            "example": "call_abc123xyz"
+          },
+          "type": {
+            "type": "string",
+            "description": "Type of tool call (always \"function\")",
+            "example": "function"
+          }
+        }
+      },
+      "ToolCallDelta": {
+        "type": "object",
+        "description": "Tool call delta in streaming responses",
+        "required": [
+          "index"
+        ],
+        "properties": {
+          "function": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ToolCallFunctionDelta",
+                "description": "Function call details"
+              }
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Tool call ID (only in first delta for this index)",
+            "example": "call_abc123xyz"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Index of this tool call in the parallel set",
+            "example": 0,
+            "minimum": 0
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Type of tool call (only in first delta)",
+            "example": "function"
+          }
+        }
+      },
+      "ToolCallFunction": {
+        "type": "object",
+        "description": "Function call details within a tool call",
+        "required": [
+          "name",
+          "arguments"
+        ],
+        "properties": {
+          "arguments": {
+            "type": "object",
+            "description": "Arguments as parsed JSON object (not string, for ergonomics)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Name of the function being called",
+            "example": "get_weather"
+          }
+        }
+      },
+      "ToolCallFunctionDelta": {
+        "type": "object",
+        "description": "Function call delta in streaming tool calls",
+        "properties": {
+          "arguments": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Argument string fragment (accumulated across deltas)",
+            "example": "{\"location\":\"Lon"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Function name (only in first delta for this tool call)",
+            "example": "get_weather"
+          }
+        }
+      },
+      "ToolDefinition": {
+        "type": "object",
+        "description": "Tool definition for the Native API",
+        "required": [
+          "type",
+          "function"
+        ],
+        "properties": {
+          "function": {
+            "$ref": "#/components/schemas/FunctionDefinition",
+            "description": "Function definition"
+          },
+          "type": {
+            "type": "string",
+            "description": "Type of tool (always \"function\")",
+            "example": "function"
+          }
+        }
+      },
+      "ToolResult": {
+        "type": "object",
+        "description": "Result of a tool call",
+        "required": [
+          "tool_call_id",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/serde_json.Value",
+            "description": "Content of the result"
+          },
+          "is_error": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Optional flag indicating this is an error result",
+            "example": false
+          },
+          "tool_call_id": {
+            "type": "string",
+            "description": "ID of the tool call this result is for",
+            "example": "call_abc123xyz"
+          }
+        }
+      },
+      "Usage": {
+        "type": "object",
+        "description": "Token usage statistics",
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens"
+        ],
+        "properties": {
+          "completion_tokens": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of tokens in the completion",
+            "example": 100,
+            "minimum": 0
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of tokens in the prompt",
+            "example": 50,
+            "minimum": 0
+          },
+          "total_tokens": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total tokens used",
+            "example": 150,
+            "minimum": 0
+          }
+        }
+      },
+      "serde_json.Value": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Let the model decide whether to call tools",
+            "enum": [
+              "Auto"
+            ]
+          },
+          {
+            "type": "string",
+            "description": "Do not call any tools",
+            "enum": [
+              "None"
+            ]
+          },
+          {
+            "type": "string",
+            "description": "Require the model to call at least one tool",
+            "enum": [
+              "Required"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "Require a specific function to be called",
+            "required": [
+              "Function"
+            ],
+            "properties": {
+              "Function": {
+                "type": "object",
+                "description": "Require a specific function to be called",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "description": "Tool choice for controlling tool usage\n\nCan be a string (\"auto\", \"none\", \"required\") or an object for specific function.",
+        "example": "auto"
+      }
+    },
+    "securitySchemes": {
+      "bearer_auth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Chat",
+      "description": "Chat completion endpoints"
+    }
+  ]
+}

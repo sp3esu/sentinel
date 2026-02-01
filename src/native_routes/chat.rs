@@ -22,6 +22,7 @@ use crate::{
     native::{
         error::NativeErrorResponse,
         request::ChatCompletionRequest,
+        response::ChatCompletionResponse,
         translate::{MessageTranslator, OpenAITranslator},
         types::Tier,
     },
@@ -106,6 +107,68 @@ struct ModelSelection {
 /// Within a session (conversation_id provided):
 /// - Tier can only be upgraded (simple -> moderate -> complex)
 /// - Downgrades are silently ignored (uses session tier)
+#[utoipa::path(
+    post,
+    path = "/native/v1/chat/completions",
+    tag = "Chat",
+    operation_id = "createNativeChatCompletion",
+    description = "Create a chat completion using Sentinel's unified API format.
+
+## Request Modes
+
+**Non-streaming (default):** Returns complete response as JSON when `stream: false` or omitted.
+
+**Streaming:** When `stream: true`, returns Server-Sent Events (SSE) with incremental chunks. Each chunk is prefixed with `data: ` and the stream ends with `data: [DONE]`.
+
+## Tier Selection
+
+The `tier` field determines model routing:
+- `simple` - Fast, cost-effective model (e.g., GPT-4o-mini) for straightforward tasks
+- `moderate` - Balanced model for general-purpose conversations
+- `complex` - Most capable model for reasoning, analysis, and complex tasks
+
+If omitted, defaults to `simple`.
+
+## Conversation Context
+
+Use `conversation_id` to maintain context across requests. The server associates this ID with cached context. If omitted, each request is treated as a new conversation.
+
+## Tool Calling
+
+Supports OpenAI-compatible tool calling:
+1. Provide `tools` array with function definitions
+2. Model may respond with `tool_calls` in the message
+3. Send tool results back with `role: tool` messages
+
+## Error Handling
+
+- **400**: Invalid request body, missing required fields, or validation errors
+- **401**: Missing or invalid JWT in Authorization header
+- **403**: User lacks permission or has exceeded quota
+- **429**: Rate limit exceeded (check X-RateLimit-* headers)
+- **500**: Internal server error
+- **502**: Upstream AI provider error (provider field indicates source)
+- **503**: No healthy providers available for the requested tier",
+    request_body(
+        content = ChatCompletionRequest,
+        description = "Chat completion request with messages, tier, and optional settings",
+        content_type = "application/json"
+    ),
+    responses(
+        (status = 200, description = "Successful completion", body = ChatCompletionResponse,
+            content_type = "application/json"),
+        (status = 400, description = "Invalid request - malformed JSON or validation error", body = NativeErrorResponse),
+        (status = 401, description = "Missing or invalid JWT in Authorization header"),
+        (status = 403, description = "Insufficient permissions or quota exceeded"),
+        (status = 429, description = "Rate limit exceeded", body = NativeErrorResponse),
+        (status = 500, description = "Internal server error", body = NativeErrorResponse),
+        (status = 502, description = "Provider error - upstream AI provider failed", body = NativeErrorResponse),
+        (status = 503, description = "Service unavailable - no healthy providers", body = NativeErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 pub async fn native_chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

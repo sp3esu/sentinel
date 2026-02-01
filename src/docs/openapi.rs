@@ -28,7 +28,9 @@ use crate::native::{
         version = "1.0.0",
         description = "Native API for Sentinel AI Proxy - unified format with tier routing and session management"
     ),
-    paths(),
+    paths(
+        crate::native_routes::chat::native_chat_completions
+    ),
     components(
         schemas(
             // Types
