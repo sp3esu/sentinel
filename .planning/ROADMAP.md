@@ -13,7 +13,7 @@ This roadmap delivers a provider-agnostic LLM API layer for Mindsmith. Starting 
 - [x] **Phase 1: Types and Translation** - Define unified message format and translate to/from OpenAI
 - [x] **Phase 2: API Endpoints** - Create /native/* routes with basic request handling
 - [x] **Phase 3: Session Management** - Track conversations with provider stickiness
-- [ ] **Phase 4: Tier Routing** - Map complexity tiers to models with config from Zion
+- [x] **Phase 4: Tier Routing** - Map complexity tiers to models with config from Zion
 - [ ] **Phase 5: Tool Calling** - Unified tool format with schema translation
 - [ ] **Phase 6: Documentation** - OpenAPI spec with protected docs endpoint
 
@@ -81,10 +81,10 @@ Plans:
 **Plans**: 4 plans in 2 waves
 
 Plans:
-- [ ] 04-01-PLAN.md - Foundation types: Tier enum, config types, request field (Wave 1)
-- [ ] 04-01b-PLAN.md - Zion integration: get_tier_config, TierConfigCache, caching (Wave 1)
-- [ ] 04-02-PLAN.md - Selection: TierRouter, cost-weighted selection, health tracking (Wave 1)
-- [ ] 04-03-PLAN.md - Integration: Handler wiring, session tier, observability, tests (Wave 2)
+- [x] 04-01-PLAN.md - Foundation types: Tier enum, config types, request field (Wave 1)
+- [x] 04-01b-PLAN.md - Zion integration: get_tier_config, TierConfigCache, caching (Wave 1)
+- [x] 04-02-PLAN.md - Selection: TierRouter, cost-weighted selection, health tracking (Wave 1)
+- [x] 04-03-PLAN.md - Integration: Handler wiring, session tier, observability, tests (Wave 2)
 
 ### Phase 5: Tool Calling
 **Goal**: Support function/tool calling through unified schema with provider translation
@@ -128,7 +128,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 1. Types and Translation | 4/4 | Complete | 2026-01-31 |
 | 2. API Endpoints | 2/2 | Complete | 2026-02-01 |
 | 3. Session Management | 2/2 | Complete | 2026-02-01 |
-| 4. Tier Routing | 0/4 | Planned | - |
+| 4. Tier Routing | 4/4 | Complete | 2026-02-01 |
 | 5. Tool Calling | 0/3 | Not started | - |
 | 6. Documentation | 0/2 | Not started | - |
 

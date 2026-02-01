@@ -39,12 +39,12 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Tier Routing
 
-- [ ] **TIER-01**: API accepts tier level (simple, moderate, complex)
-- [ ] **TIER-02**: Tier maps to available models from configuration
-- [ ] **TIER-03**: Provider selected based on cost (prefer cheaper)
-- [ ] **TIER-04**: Unavailable providers skipped (rate limited, down)
-- [ ] **TIER-05**: Model configuration loaded from Zion API
-- [ ] **TIER-06**: Fallback configuration when Zion unavailable
+- [x] **TIER-01**: API accepts tier level (simple, moderate, complex)
+- [x] **TIER-02**: Tier maps to available models from configuration
+- [x] **TIER-03**: Provider selected based on cost (prefer cheaper)
+- [x] **TIER-04**: Unavailable providers skipped (rate limited, down)
+- [x] **TIER-05**: Model configuration loaded from Zion API
+- [x] **TIER-06**: Fallback configuration when Zion unavailable
 
 ### API Endpoints
 
@@ -119,12 +119,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SESS-02 | Phase 3 | Complete |
 | SESS-03 | Phase 3 | Complete |
 | SESS-04 | Phase 3 | Complete |
-| TIER-01 | Phase 4 | Pending |
-| TIER-02 | Phase 4 | Pending |
-| TIER-03 | Phase 4 | Pending |
-| TIER-04 | Phase 4 | Pending |
-| TIER-05 | Phase 4 | Pending |
-| TIER-06 | Phase 4 | Pending |
+| TIER-01 | Phase 4 | Complete |
+| TIER-02 | Phase 4 | Complete |
+| TIER-03 | Phase 4 | Complete |
+| TIER-04 | Phase 4 | Complete |
+| TIER-05 | Phase 4 | Complete |
+| TIER-06 | Phase 4 | Complete |
 | API-01 | Phase 2 | Complete |
 | API-02 | Phase 2 | Complete |
 | API-03 | Phase 2 | Complete |
