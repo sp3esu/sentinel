@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::types::Message;
+use super::types::{Message, Tier};
 
 /// Stop sequence - can be a single string or array of strings
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -23,9 +23,14 @@ pub enum StopSequence {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ChatCompletionRequest {
-    /// Model to use (optional - tier routing may override)
+    /// Complexity tier for model routing (optional, defaults to simple)
+    ///
+    /// Controls which model is selected for this request:
+    /// - `simple`: Fast, cost-effective models for straightforward tasks
+    /// - `moderate`: Balanced models for typical assistant interactions
+    /// - `complex`: Most capable models for difficult reasoning tasks
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub tier: Option<Tier>,
     /// Messages in the conversation
     pub messages: Vec<Message>,
     /// Sampling temperature (0.0 to 2.0)
@@ -55,10 +60,68 @@ mod tests {
     use super::*;
     use crate::native::types::{Content, Role};
 
+    // =============================================================================
+    // Tier Field Tests
+    // =============================================================================
+
     #[test]
-    fn test_valid_request_deserializes() {
+    fn test_tier_simple_deserializes() {
         let json = r#"{
-            "model": "gpt-4",
+            "tier": "simple",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ]
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.tier, Some(Tier::Simple));
+        assert_eq!(request.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_tier_moderate_deserializes() {
+        let json = r#"{
+            "tier": "moderate",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ]
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.tier, Some(Tier::Moderate));
+    }
+
+    #[test]
+    fn test_tier_complex_deserializes() {
+        let json = r#"{
+            "tier": "complex",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ]
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.tier, Some(Tier::Complex));
+    }
+
+    #[test]
+    fn test_tier_invalid_rejected() {
+        let json = r#"{
+            "tier": "invalid",
+            "messages": []
+        }"#;
+        let result: Result<ChatCompletionRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tier_optional_defaults_to_none() {
+        let json = r#"{"messages": []}"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.tier, None);
+    }
+
+    #[test]
+    fn test_valid_request_with_tier_deserializes() {
+        let json = r#"{
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ],
@@ -66,7 +129,7 @@ mod tests {
             "max_tokens": 100
         }"#;
         let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.model, Some("gpt-4".to_string()));
+        assert_eq!(request.tier, Some(Tier::Simple));
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.messages[0].role, Role::User);
         assert_eq!(request.temperature, Some(0.7));
@@ -77,6 +140,16 @@ mod tests {
     #[test]
     fn test_unknown_field_rejected() {
         let json = r#"{"messages": [], "unknown_field": true}"#;
+        let result: Result<ChatCompletionRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("unknown field"));
+    }
+
+    #[test]
+    fn test_model_field_rejected() {
+        // model field is no longer valid - use tier instead
+        let json = r#"{"model": "gpt-4", "messages": []}"#;
         let result: Result<ChatCompletionRequest, _> = serde_json::from_str(json);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -121,7 +194,7 @@ mod tests {
     fn test_minimal_request() {
         let json = r#"{"messages": []}"#;
         let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(request.model, None);
+        assert_eq!(request.tier, None);
         assert!(request.messages.is_empty());
         assert_eq!(request.temperature, None);
         assert_eq!(request.max_tokens, None);
@@ -133,7 +206,7 @@ mod tests {
     #[test]
     fn test_request_with_all_optional_fields() {
         let request = ChatCompletionRequest {
-            model: Some("gpt-4".to_string()),
+            tier: Some(Tier::Moderate),
             messages: vec![Message {
                 role: Role::User,
                 content: Content::Text("Hi".to_string()),
@@ -152,28 +225,60 @@ mod tests {
         assert_eq!(request, deserialized);
     }
 
+    #[test]
+    fn test_tier_omitted_from_serialization_when_none() {
+        let request = ChatCompletionRequest {
+            tier: None,
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        // tier should not appear in serialized output when None
+        assert!(!json.contains("tier"));
+    }
+
+    #[test]
+    fn test_tier_included_in_serialization_when_some() {
+        let request = ChatCompletionRequest {
+            tier: Some(Tier::Complex),
+            messages: vec![],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"tier\":\"complex\""));
+    }
+
     // =============================================================================
     // Conversation ID Tests
     // =============================================================================
 
     #[test]
-    fn test_request_without_conversation_id_backward_compatible() {
-        // Request without conversation_id should still work (backward compatible)
+    fn test_request_without_conversation_id() {
         let json = r#"{
-            "model": "gpt-4",
+            "tier": "simple",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ]
         }"#;
         let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.conversation_id, None);
-        assert_eq!(request.model, Some("gpt-4".to_string()));
+        assert_eq!(request.tier, Some(Tier::Simple));
     }
 
     #[test]
     fn test_request_with_conversation_id_deserializes() {
         let json = r#"{
-            "model": "gpt-4",
+            "tier": "moderate",
             "messages": [
                 {"role": "user", "content": "Hello!"}
             ],
@@ -181,13 +286,13 @@ mod tests {
         }"#;
         let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
         assert_eq!(request.conversation_id, Some("conv-12345".to_string()));
-        assert_eq!(request.model, Some("gpt-4".to_string()));
+        assert_eq!(request.tier, Some(Tier::Moderate));
     }
 
     #[test]
     fn test_conversation_id_omitted_from_serialization_when_none() {
         let request = ChatCompletionRequest {
-            model: Some("gpt-4".to_string()),
+            tier: Some(Tier::Simple),
             messages: vec![Message {
                 role: Role::User,
                 content: Content::Text("Hi".to_string()),
@@ -209,7 +314,7 @@ mod tests {
     #[test]
     fn test_conversation_id_included_in_serialization_when_some() {
         let request = ChatCompletionRequest {
-            model: Some("gpt-4".to_string()),
+            tier: Some(Tier::Simple),
             messages: vec![Message {
                 role: Role::User,
                 content: Content::Text("Hi".to_string()),

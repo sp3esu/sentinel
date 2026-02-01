@@ -58,15 +58,12 @@ impl MessageTranslator for OpenAITranslator {
 
         // Build the request JSON
         // Since Native API is OpenAI-compatible, we can serialize messages directly
+        // Note: model is not included here - it's injected by the handler after tier routing
         let mut obj = json!({
             "messages": request.messages,
         });
 
         // Add optional fields if present
-        if let Some(ref model) = request.model {
-            obj["model"] = json!(model);
-        }
-
         if let Some(temperature) = request.temperature {
             obj["temperature"] = json!(temperature);
         }
@@ -242,7 +239,7 @@ mod tests {
     fn test_translate_simple_request() {
         let translator = OpenAITranslator::new();
         let request = ChatCompletionRequest {
-            model: Some("gpt-4".to_string()),
+            tier: None,
             messages: vec![
                 make_message(Role::System, "You are a helpful assistant."),
                 make_message(Role::User, "Hello!"),
@@ -264,13 +261,16 @@ mod tests {
         assert_eq!(messages[1].get("role").unwrap(), "user");
         assert_eq!(messages[0].get("content").unwrap(), "You are a helpful assistant.");
         assert_eq!(messages[1].get("content").unwrap(), "Hello!");
+        // Model is not included in translated request - injected by handler
+        assert!(result.get("model").is_none());
     }
 
     #[test]
     fn test_translate_request_with_params() {
+        use crate::native::types::Tier;
         let translator = OpenAITranslator::new();
         let request = ChatCompletionRequest {
-            model: Some("gpt-4-turbo".to_string()),
+            tier: Some(Tier::Moderate),
             messages: vec![make_message(Role::User, "Hi")],
             temperature: Some(0.7),
             max_tokens: Some(500),
@@ -282,7 +282,8 @@ mod tests {
 
         let result = translator.translate_request(&request).unwrap();
 
-        assert_eq!(result.get("model").unwrap(), "gpt-4-turbo");
+        // Model is not included - tier routing handles model selection
+        assert!(result.get("model").is_none());
         assert_eq!(result.get("temperature").unwrap(), 0.7);
         assert_eq!(result.get("max_tokens").unwrap(), 500);
         assert_eq!(result.get("top_p").unwrap(), 0.95);
@@ -293,7 +294,7 @@ mod tests {
     fn test_system_not_first_error() {
         let translator = OpenAITranslator::new();
         let request = ChatCompletionRequest {
-            model: None,
+            tier: None,
             messages: vec![
                 make_message(Role::User, "Hello!"),
                 make_message(Role::System, "You are an assistant."), // System AFTER user - invalid!
@@ -377,7 +378,7 @@ mod tests {
     fn test_empty_messages_valid() {
         let translator = OpenAITranslator::new();
         let request = ChatCompletionRequest {
-            model: None,
+            tier: None,
             messages: vec![],
             temperature: None,
             max_tokens: None,
@@ -401,7 +402,7 @@ mod tests {
     fn test_multiple_system_messages_at_start() {
         let translator = OpenAITranslator::new();
         let request = ChatCompletionRequest {
-            model: None,
+            tier: None,
             messages: vec![
                 make_message(Role::System, "First system message"),
                 make_message(Role::System, "Second system message"),

@@ -22,6 +22,7 @@ use crate::{
         error::NativeErrorResponse,
         request::ChatCompletionRequest,
         translate::{MessageTranslator, OpenAITranslator},
+        types::Tier,
     },
     streaming::SseLineBuffer,
     AppState,
@@ -61,6 +62,16 @@ struct StreamDelta {
     content: Option<String>,
 }
 
+/// Temporary: Map tier to default model until tier routing is implemented
+/// This will be replaced by TierRouter in Phase 4 Plan 02/03
+fn tier_to_default_model(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Simple => "gpt-4o-mini",
+        Tier::Moderate => "gpt-4o",
+        Tier::Complex => "gpt-4o",
+    }
+}
+
 /// Handle native chat completion requests
 ///
 /// Accepts requests in Native API format, translates to OpenAI format,
@@ -70,7 +81,7 @@ struct StreamDelta {
 ///
 /// ```json
 /// {
-///   "model": "gpt-4",           // Required in Phase 2 (optional in Phase 4 with tier routing)
+///   "tier": "simple",           // Optional, defaults to simple. Phase 4 tier routing.
 ///   "messages": [...],          // Required
 ///   "stream": false,            // Optional, defaults to false
 ///   "temperature": 0.7,         // Optional
@@ -101,7 +112,11 @@ pub async fn native_chat_completions(
         NativeErrorResponse::validation(format!("Invalid request body: {}", e))
     })?;
 
+    // Determine tier from request (default to Simple)
+    let requested_tier = native_request.tier.unwrap_or_default();
+
     // Session handling: use stored provider/model or create new session
+    // TODO: Phase 4 Plan 02/03 will add tier upgrade logic here
     let (provider, model) = if let Some(ref conv_id) = native_request.conversation_id {
         // Try to get existing session
         if let Some(session) = state.session_manager.get(conv_id).await.map_err(|e| {
@@ -112,28 +127,20 @@ pub async fn native_chat_completions(
                 warn!(conversation_id = %conv_id, error = %e, "Failed to refresh session TTL");
             }
 
-            // Log if request model differs from session model (for debugging)
-            if let Some(ref req_model) = native_request.model {
-                if req_model != &session.model {
-                    debug!(
-                        conversation_id = %conv_id,
-                        session_model = %session.model,
-                        request_model = %req_model,
-                        "Request model differs from session model - using session model"
-                    );
-                }
-            }
+            // Log tier info for debugging
+            debug!(
+                conversation_id = %conv_id,
+                session_model = %session.model,
+                requested_tier = ?requested_tier,
+                "Using session model (tier upgrade logic in Phase 4 Plan 02/03)"
+            );
 
             (session.provider, session.model)
         } else {
             // Session expired or never existed - create new session
-            // Phase 3: model required, provider hardcoded to openai
-            // Phase 4: tier routing will determine provider/model
-            let model = native_request.model.clone().ok_or_else(|| {
-                NativeErrorResponse::validation(
-                    "model field is required for new sessions. Phase 4 will enable tier-based routing.",
-                )
-            })?;
+            // Phase 4: Use tier to select model (currently hardcoded mapping)
+            // TierRouter will replace this in Plan 02/03
+            let model = tier_to_default_model(requested_tier).to_string();
             let provider = "openai".to_string();
 
             // Store new session
@@ -141,16 +148,18 @@ pub async fn native_chat_completions(
                 .await
                 .map_err(|e| NativeErrorResponse::internal(format!("Session creation failed: {}", e)))?;
 
-            info!(conversation_id = %conv_id, model = %model, "Created new session");
+            info!(
+                conversation_id = %conv_id,
+                model = %model,
+                tier = ?requested_tier,
+                "Created new session with tier-based model"
+            );
             (provider, model)
         }
     } else {
         // No conversation_id - fresh selection each time (stateless mode)
-        let model = native_request.model.clone().ok_or_else(|| {
-            NativeErrorResponse::validation(
-                "model field is required. Phase 4 will enable tier-based model routing.",
-            )
-        })?;
+        // Phase 4: Use tier to select model (currently hardcoded mapping)
+        let model = tier_to_default_model(requested_tier).to_string();
         ("openai".to_string(), model)
     };
 
