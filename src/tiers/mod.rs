@@ -6,7 +6,9 @@
 pub mod cache;
 pub mod config;
 pub mod health;
+pub mod router;
 
 pub use cache::TierConfigCache;
 pub use config::TierConfig;
 pub use health::{HealthConfig, ProviderHealthTracker};
+pub use router::{SelectedModel, TierRouter};
