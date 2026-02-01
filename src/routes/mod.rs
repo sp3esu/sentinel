@@ -38,7 +38,7 @@ use tracing::warn;
 
 use crate::{
     middleware::{auth::auth_middleware, rate_limiter::rate_limit_middleware},
-    native_routes,
+    native_routes::{self, create_docs_router},
     AppState,
 };
 
@@ -95,6 +95,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .merge(public_routes)
         .merge(debug_routes)
+        // Docs router - API key protected, no auth/rate-limit middleware
+        // Must be merged before fallback since it handles /native/docs paths
+        .merge(create_docs_router())
         // Nest protected routes under /v1 - this makes fallback work correctly
         .nest("/v1", protected_routes)
         // Nest native API routes under /native - unified format with translation

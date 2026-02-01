@@ -75,7 +75,13 @@ async fn swagger_ui_redirect(Path(file): Path<String>) -> impl IntoResponse {
 /// - GET /native/docs/openapi.json - Raw OpenAPI spec
 ///
 /// Uses CDN-hosted Swagger UI assets to avoid bundling large static files.
-pub fn create_docs_router() -> Router {
+///
+/// The router is generic over state type S, allowing it to be merged
+/// into routers with any state (e.g., Arc<AppState>).
+pub fn create_docs_router<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     Router::new()
         .route("/native/docs", get(swagger_ui))
         .route("/native/docs/", get(swagger_ui))
