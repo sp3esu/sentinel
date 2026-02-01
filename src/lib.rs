@@ -27,7 +27,7 @@ pub use crate::cache::{RedisCache, SubscriptionCache};
 pub use crate::config::Config;
 pub use crate::native::SessionManager;
 pub use crate::proxy::{AiProvider, OpenAIProvider};
-pub use crate::tiers::TierConfigCache;
+pub use crate::tiers::{HealthConfig, ProviderHealthTracker, SelectedModel, TierConfigCache, TierRouter};
 pub use crate::tokens::SharedTokenCounter;
 pub use crate::usage::{BatchingUsageTracker, UsageTracker};
 pub use crate::zion::ZionClient;
