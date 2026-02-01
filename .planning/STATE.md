@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-01-31)
 ## Current Position
 
 Phase: 3 of 6 (Session Management)
-Plan: 0 of 2 in current phase
-Status: Ready to plan
-Last activity: 2026-02-01 - Phase 2 verified and complete
+Plan: 1 of 2 in current phase
+Status: In progress
+Last activity: 2026-02-01 - Completed 03-01-PLAN.md
 
-Progress: [======              ] 33%
+Progress: [=======             ] 38%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
+- Total plans completed: 7
 - Average duration: 4 min
-- Total execution time: 26 min
+- Total execution time: 30 min
 
 **By Phase:**
 
@@ -29,9 +29,10 @@ Progress: [======              ] 33%
 |-------|-------|-------|----------|
 | 01-types-and-translation | 4 | 19 min | 5 min |
 | 02-api-endpoints | 2 | 7 min | 4 min |
+| 03-session-management | 1 | 4 min | 4 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-03 (4min), 01-04 (4min), 02-01 (4min), 02-02 (3min)
+- Last 5 plans: 01-04 (4min), 02-01 (4min), 02-02 (3min), 03-01 (4min)
 - Trend: Steady at 4 min
 
 *Updated after each plan completion*
@@ -61,6 +62,8 @@ Recent decisions affecting current work:
 | Model required in Phase 2 | 02-01 | Phase 4 adds tier routing which makes model optional |
 | Stream pass-through | 02-01 | Native API is OpenAI-compatible; minimal transformation needed |
 | Regression test in native_chat module | 02-02 | Single module for all native chat tests including regression |
+| Session stored as JSON in Redis | 03-01 | Follow SubscriptionCache pattern for consistency |
+| Activity-based TTL refresh | 03-01 | touch() refreshes TTL on each request, not fixed from creation |
 
 ### Pending Todos
 
@@ -73,5 +76,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-01
-Stopped at: Phase 2 verified and complete
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None
