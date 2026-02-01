@@ -4,7 +4,7 @@
 //! Protected by X-Docs-Key header; returns 404 when unauthorized to hide endpoint existence.
 
 use axum::{
-    extract::{Path, Request},
+    extract::Request,
     http::StatusCode,
     middleware::Next,
     response::{Html, IntoResponse, Response},
@@ -57,16 +57,6 @@ async fn swagger_ui() -> Html<&'static str> {
     Html(SWAGGER_UI_HTML)
 }
 
-/// Handler for Swagger UI assets from CDN redirect
-///
-/// For simplicity, we use unpkg CDN for Swagger UI assets.
-/// The main HTML page loads them directly.
-async fn swagger_ui_redirect(Path(file): Path<String>) -> impl IntoResponse {
-    // Redirect to unpkg CDN for Swagger UI assets
-    let cdn_url = format!("https://unpkg.com/swagger-ui-dist@5/{}", file);
-    axum::response::Redirect::temporary(&cdn_url)
-}
-
 /// Create the docs router
 ///
 /// Routes:
@@ -75,6 +65,7 @@ async fn swagger_ui_redirect(Path(file): Path<String>) -> impl IntoResponse {
 /// - GET /native/docs/openapi.json - Raw OpenAPI spec
 ///
 /// Uses CDN-hosted Swagger UI assets to avoid bundling large static files.
+/// The HTML page loads assets directly from unpkg CDN.
 ///
 /// The router is generic over state type S, allowing it to be merged
 /// into routers with any state (e.g., Arc<AppState>).
@@ -86,7 +77,6 @@ where
         .route("/native/docs", get(swagger_ui))
         .route("/native/docs/", get(swagger_ui))
         .route("/native/docs/openapi.json", get(openapi_json))
-        .route("/native/docs/{*file}", get(swagger_ui_redirect))
         .layer(axum::middleware::from_fn(docs_auth_middleware))
 }
 
@@ -137,146 +127,153 @@ const SWAGGER_UI_HTML: &str = r#"<!DOCTYPE html>
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request as HttpRequest};
+    use std::sync::Mutex;
     use tower::ServiceExt;
+
+    // Static mutex to serialize access to DOCS_API_KEY environment variable
+    // This prevents race conditions when tests run in parallel
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    // Helper to run test with environment variable control
+    async fn with_env<F, Fut>(key_value: Option<&str>, test_fn: F)
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        match key_value {
+            Some(val) => std::env::set_var("DOCS_API_KEY", val),
+            None => std::env::remove_var("DOCS_API_KEY"),
+        }
+        test_fn().await;
+        std::env::remove_var("DOCS_API_KEY");
+    }
 
     // Test: Docs accessible without key when env var not set (dev mode)
     #[tokio::test]
     async fn test_docs_accessible_without_key_in_dev_mode() {
-        // Ensure DOCS_API_KEY is not set
-        std::env::remove_var("DOCS_API_KEY");
+        with_env(None, || async {
+            let app = create_docs_router::<()>();
 
-        let app = create_docs_router();
+            let request = HttpRequest::builder()
+                .uri("/native/docs/openapi.json")
+                .body(Body::empty())
+                .unwrap();
 
-        // Request without X-Docs-Key header
-        let request = HttpRequest::builder()
-            .uri("/native/docs/openapi.json")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-
-        // Should succeed in dev mode
-        assert_eq!(response.status(), StatusCode::OK);
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        })
+        .await;
     }
 
     // Test: Docs return 404 without key when env var is set (prod mode)
     #[tokio::test]
     async fn test_docs_return_404_without_key_in_prod_mode() {
-        std::env::set_var("DOCS_API_KEY", "secret-docs-key-prod");
+        with_env(Some("secret-docs-key-prod"), || async {
+            let app = create_docs_router::<()>();
 
-        let app = create_docs_router();
+            let request = HttpRequest::builder()
+                .uri("/native/docs/openapi.json")
+                .body(Body::empty())
+                .unwrap();
 
-        // Request without X-Docs-Key header
-        let request = HttpRequest::builder()
-            .uri("/native/docs/openapi.json")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-
-        // Should return 404 to hide endpoint
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
-        std::env::remove_var("DOCS_API_KEY");
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        })
+        .await;
     }
 
     // Test: Docs return 404 with wrong key (prod mode)
     #[tokio::test]
     async fn test_docs_return_404_with_wrong_key() {
-        std::env::set_var("DOCS_API_KEY", "secret-docs-key-wrong");
+        with_env(Some("secret-docs-key-wrong"), || async {
+            let app = create_docs_router::<()>();
 
-        let app = create_docs_router();
+            let request = HttpRequest::builder()
+                .uri("/native/docs/openapi.json")
+                .header("X-Docs-Key", "wrong-key")
+                .body(Body::empty())
+                .unwrap();
 
-        // Request with wrong X-Docs-Key header
-        let request = HttpRequest::builder()
-            .uri("/native/docs/openapi.json")
-            .header("X-Docs-Key", "wrong-key")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-
-        // Should return 404 to hide endpoint
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
-        std::env::remove_var("DOCS_API_KEY");
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        })
+        .await;
     }
 
     // Test: Docs accessible with correct key (prod mode)
     #[tokio::test]
     async fn test_docs_accessible_with_correct_key() {
-        std::env::set_var("DOCS_API_KEY", "secret-docs-key-correct");
+        with_env(Some("secret-docs-key-correct"), || async {
+            let app = create_docs_router::<()>();
 
-        let app = create_docs_router();
+            let request = HttpRequest::builder()
+                .uri("/native/docs/openapi.json")
+                .header("X-Docs-Key", "secret-docs-key-correct")
+                .body(Body::empty())
+                .unwrap();
 
-        // Request with correct X-Docs-Key header
-        let request = HttpRequest::builder()
-            .uri("/native/docs/openapi.json")
-            .header("X-Docs-Key", "secret-docs-key-correct")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-
-        // Should succeed with correct key
-        assert_eq!(response.status(), StatusCode::OK);
-
-        std::env::remove_var("DOCS_API_KEY");
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        })
+        .await;
     }
 
     // Test: OpenAPI JSON contains expected structure
     #[tokio::test]
     async fn test_openapi_json_structure() {
-        std::env::remove_var("DOCS_API_KEY");
+        with_env(None, || async {
+            let app = create_docs_router::<()>();
 
-        let app = create_docs_router();
+            let request = HttpRequest::builder()
+                .uri("/native/docs/openapi.json")
+                .body(Body::empty())
+                .unwrap();
 
-        let request = HttpRequest::builder()
-            .uri("/native/docs/openapi.json")
-            .body(Body::empty())
-            .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
 
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let spec: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let spec: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-        // Verify OpenAPI structure
-        assert!(spec["openapi"].as_str().unwrap().starts_with("3."));
-        assert!(spec["info"]["title"]
-            .as_str()
-            .unwrap()
-            .contains("Sentinel"));
-        assert!(spec["paths"]["/native/v1/chat/completions"].is_object());
-        assert!(spec["components"]["schemas"]["ChatCompletionRequest"].is_object());
-        assert!(spec["components"]["securitySchemes"]["bearer_auth"].is_object());
+            // Verify OpenAPI structure
+            assert!(spec["openapi"].as_str().unwrap().starts_with("3."));
+            assert!(spec["info"]["title"]
+                .as_str()
+                .unwrap()
+                .contains("Sentinel"));
+            assert!(spec["paths"]["/native/v1/chat/completions"].is_object());
+            assert!(spec["components"]["schemas"]["ChatCompletionRequest"].is_object());
+            assert!(spec["components"]["securitySchemes"]["bearer_auth"].is_object());
+        })
+        .await;
     }
 
     // Test: Swagger UI HTML is served
     #[tokio::test]
     async fn test_swagger_ui_html_served() {
-        std::env::remove_var("DOCS_API_KEY");
+        with_env(None, || async {
+            let app = create_docs_router::<()>();
 
-        let app = create_docs_router();
+            let request = HttpRequest::builder()
+                .uri("/native/docs")
+                .body(Body::empty())
+                .unwrap();
 
-        let request = HttpRequest::builder()
-            .uri("/native/docs")
-            .body(Body::empty())
-            .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
 
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let html = String::from_utf8_lossy(&body);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let html = String::from_utf8_lossy(&body);
-
-        // Verify it's Swagger UI HTML
-        assert!(html.contains("swagger-ui"));
-        assert!(html.contains("/native/docs/openapi.json"));
+            // Verify it's Swagger UI HTML
+            assert!(html.contains("swagger-ui"));
+            assert!(html.contains("/native/docs/openapi.json"));
+        })
+        .await;
     }
 }
