@@ -61,6 +61,28 @@ fn register_metrics() {
         "sentinel_token_estimation_fallback_total",
         "Times token counting fell back to estimation (OpenAI didn't return usage)"
     );
+
+    // Tier routing metrics
+    metrics::describe_counter!(
+        "sentinel_tier_requests_total",
+        "Total requests by tier"
+    );
+    metrics::describe_counter!(
+        "sentinel_model_selections_total",
+        "Model selections by tier, provider, and model"
+    );
+    metrics::describe_counter!(
+        "sentinel_provider_failures_total",
+        "Provider failures triggering backoff"
+    );
+    metrics::describe_counter!(
+        "sentinel_model_retries_total",
+        "Model retry attempts after initial failure"
+    );
+    metrics::describe_gauge!(
+        "sentinel_provider_health",
+        "Provider health status (1=healthy, 0=in backoff)"
+    );
 }
 
 /// Prometheus metrics endpoint handler
@@ -151,6 +173,61 @@ pub fn record_fallback_estimation(model: &str) {
         "model" => model.to_string()
     )
     .increment(1);
+}
+
+// =============================================================================
+// Tier Routing Metrics
+// =============================================================================
+
+/// Record a tier request
+pub fn record_tier_request(tier: &str) {
+    metrics::counter!(
+        "sentinel_tier_requests_total",
+        "tier" => tier.to_string()
+    )
+    .increment(1);
+}
+
+/// Record model selection
+pub fn record_model_selection(tier: &str, provider: &str, model: &str) {
+    metrics::counter!(
+        "sentinel_model_selections_total",
+        "tier" => tier.to_string(),
+        "provider" => provider.to_string(),
+        "model" => model.to_string()
+    )
+    .increment(1);
+}
+
+/// Record provider failure
+pub fn record_provider_failure(provider: &str, model: &str) {
+    metrics::counter!(
+        "sentinel_provider_failures_total",
+        "provider" => provider.to_string(),
+        "model" => model.to_string()
+    )
+    .increment(1);
+}
+
+/// Record model retry attempt
+pub fn record_model_retry(tier: &str, failed_model: &str, retry_model: &str) {
+    metrics::counter!(
+        "sentinel_model_retries_total",
+        "tier" => tier.to_string(),
+        "failed_model" => failed_model.to_string(),
+        "retry_model" => retry_model.to_string()
+    )
+    .increment(1);
+}
+
+/// Update provider health gauge
+pub fn set_provider_health(provider: &str, model: &str, healthy: bool) {
+    metrics::gauge!(
+        "sentinel_provider_health",
+        "provider" => provider.to_string(),
+        "model" => model.to_string()
+    )
+    .set(if healthy { 1.0 } else { 0.0 });
 }
 
 #[cfg(test)]
