@@ -59,6 +59,10 @@ http-body-util = "0.1"
 
 # Sync primitives
 once_cell = "1"
+regex = "1"
+
+# JSON Schema validation
+jsonschema = "0.29"
 
 # Rate limiting & Circuit breaker
 governor = "0.6"
