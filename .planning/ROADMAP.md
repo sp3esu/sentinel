@@ -61,11 +61,11 @@ Plans:
   2. First request in a session stores provider selection in Redis
   3. Requests without conversation_id trigger fresh provider selection each time
   4. Session data expires after 24 hours of inactivity
-**Plans**: TBD
+**Plans**: 2 plans in 2 waves
 
 Plans:
-- [ ] 03-01: Session storage and retrieval
-- [ ] 03-02: Session-aware routing integration
+- [ ] 03-01-PLAN.md - Session storage foundation: Session struct, SessionManager, config (Wave 1)
+- [ ] 03-02-PLAN.md - Handler integration: AppState wiring, request field, tests (Wave 2)
 
 ### Phase 4: Tier Routing
 **Goal**: Map complexity tiers to specific models based on configuration from Zion
