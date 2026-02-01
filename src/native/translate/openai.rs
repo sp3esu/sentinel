@@ -252,6 +252,7 @@ mod tests {
             top_p: None,
             stop: None,
             stream: false,
+            conversation_id: None,
         };
 
         let result = translator.translate_request(&request).unwrap();
@@ -276,6 +277,7 @@ mod tests {
             top_p: Some(0.95),
             stop: None,
             stream: true,
+            conversation_id: None,
         };
 
         let result = translator.translate_request(&request).unwrap();
@@ -301,6 +303,7 @@ mod tests {
             top_p: None,
             stop: None,
             stream: false,
+            conversation_id: None,
         };
 
         let result = translator.translate_request(&request);
@@ -381,6 +384,7 @@ mod tests {
             top_p: None,
             stop: None,
             stream: false,
+            conversation_id: None,
         };
 
         // Empty messages should translate without error
@@ -408,6 +412,7 @@ mod tests {
             top_p: None,
             stop: None,
             stream: false,
+            conversation_id: None,
         };
 
         // Multiple system messages at start should be valid

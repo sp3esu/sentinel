@@ -43,6 +43,11 @@ pub struct ChatCompletionRequest {
     /// Whether to stream the response
     #[serde(default)]
     pub stream: bool,
+    /// Conversation ID for session stickiness (optional)
+    /// When provided, uses the provider/model from the first request in this conversation.
+    /// When absent, triggers fresh provider selection each time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -140,9 +145,99 @@ mod tests {
             top_p: Some(0.95),
             stop: Some(StopSequence::Single("END".to_string())),
             stream: true,
+            conversation_id: None,
         };
         let json = serde_json::to_string(&request).unwrap();
         let deserialized: ChatCompletionRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(request, deserialized);
+    }
+
+    // =============================================================================
+    // Conversation ID Tests
+    // =============================================================================
+
+    #[test]
+    fn test_request_without_conversation_id_backward_compatible() {
+        // Request without conversation_id should still work (backward compatible)
+        let json = r#"{
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ]
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.conversation_id, None);
+        assert_eq!(request.model, Some("gpt-4".to_string()));
+    }
+
+    #[test]
+    fn test_request_with_conversation_id_deserializes() {
+        let json = r#"{
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Hello!"}
+            ],
+            "conversation_id": "conv-12345"
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.conversation_id, Some("conv-12345".to_string()));
+        assert_eq!(request.model, Some("gpt-4".to_string()));
+    }
+
+    #[test]
+    fn test_conversation_id_omitted_from_serialization_when_none() {
+        let request = ChatCompletionRequest {
+            model: Some("gpt-4".to_string()),
+            messages: vec![Message {
+                role: Role::User,
+                content: Content::Text("Hi".to_string()),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        // conversation_id should not appear in serialized output when None
+        assert!(!json.contains("conversation_id"));
+    }
+
+    #[test]
+    fn test_conversation_id_included_in_serialization_when_some() {
+        let request = ChatCompletionRequest {
+            model: Some("gpt-4".to_string()),
+            messages: vec![Message {
+                role: Role::User,
+                content: Content::Text("Hi".to_string()),
+                name: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stop: None,
+            stream: false,
+            conversation_id: Some("conv-uuid-123".to_string()),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("conversation_id"));
+        assert!(json.contains("conv-uuid-123"));
+    }
+
+    #[test]
+    fn test_conversation_id_with_uuid_format() {
+        let json = r#"{
+            "messages": [],
+            "conversation_id": "550e8400-e29b-41d4-a716-446655440000"
+        }"#;
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            request.conversation_id,
+            Some("550e8400-e29b-41d4-a716-446655440000".to_string())
+        );
     }
 }
