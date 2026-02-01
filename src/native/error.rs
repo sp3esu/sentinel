@@ -103,6 +103,32 @@ impl NativeErrorResponse {
         }
     }
 
+    /// Create a service unavailable error (503 Service Unavailable)
+    ///
+    /// Use when the service is temporarily unavailable (e.g., all providers in backoff).
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            error: NativeError {
+                message: message.into(),
+                error_type: "service_unavailable".to_string(),
+                code: "service_unavailable".to_string(),
+                provider: None,
+            },
+            rate_limit_info: None,
+        }
+    }
+
+    /// Convert from AppError
+    pub fn from_app_error(err: crate::error::AppError) -> Self {
+        use crate::error::AppError;
+        match err {
+            AppError::ServiceUnavailable { message, .. } => Self::service_unavailable(&message),
+            AppError::BadRequest(msg) => Self::validation(msg),
+            AppError::NotFound(msg) => Self::validation(msg),
+            _ => Self::internal(err.to_string()),
+        }
+    }
+
     /// Get the HTTP status code for this error
     fn status_code(&self) -> StatusCode {
         match self.error.error_type.as_str() {
@@ -110,6 +136,7 @@ impl NativeErrorResponse {
             "upstream_error" => StatusCode::BAD_GATEWAY,
             "rate_limit_error" => StatusCode::TOO_MANY_REQUESTS,
             "server_error" => StatusCode::INTERNAL_SERVER_ERROR,
+            "service_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

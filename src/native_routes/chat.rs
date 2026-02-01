@@ -2,13 +2,14 @@
 //!
 //! Handles chat completion requests in the unified Native API format.
 //! Supports both streaming and non-streaming responses.
+//! Uses tier routing for model selection based on complexity.
 
 use std::sync::Arc;
 
 use axum::{
     body::Body,
     extract::State,
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -62,14 +63,11 @@ struct StreamDelta {
     content: Option<String>,
 }
 
-/// Temporary: Map tier to default model until tier routing is implemented
-/// This will be replaced by TierRouter in Phase 4 Plan 02/03
-fn tier_to_default_model(tier: Tier) -> &'static str {
-    match tier {
-        Tier::Simple => "gpt-4o-mini",
-        Tier::Moderate => "gpt-4o",
-        Tier::Complex => "gpt-4o",
-    }
+/// Model selection result with tier for session storage
+struct ModelSelection {
+    provider: String,
+    model: String,
+    tier: Tier,
 }
 
 /// Handle native chat completion requests
@@ -81,13 +79,23 @@ fn tier_to_default_model(tier: Tier) -> &'static str {
 ///
 /// ```json
 /// {
-///   "tier": "simple",           // Optional, defaults to simple. Phase 4 tier routing.
+///   "tier": "simple",           // Optional, defaults to simple
 ///   "messages": [...],          // Required
 ///   "stream": false,            // Optional, defaults to false
 ///   "temperature": 0.7,         // Optional
 ///   "max_tokens": 1000          // Optional
 /// }
 /// ```
+///
+/// # Tier Routing
+///
+/// - `simple`: Fast, cheap models (e.g., gpt-4o-mini)
+/// - `moderate`: Balanced models (e.g., gpt-4o)
+/// - `complex`: Most capable models (e.g., gpt-4o with higher cost)
+///
+/// Within a session (conversation_id provided):
+/// - Tier can only be upgraded (simple -> moderate -> complex)
+/// - Downgrades are silently ignored (uses session tier)
 pub async fn native_chat_completions(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -115,59 +123,16 @@ pub async fn native_chat_completions(
     // Determine tier from request (default to Simple)
     let requested_tier = native_request.tier.unwrap_or_default();
 
-    // Session handling: use stored provider/model or create new session
-    // TODO: Phase 4 Plan 02/03 will add tier upgrade logic here
-    let (provider, model) = if let Some(ref conv_id) = native_request.conversation_id {
-        // Try to get existing session
-        if let Some(session) = state.session_manager.get(conv_id).await.map_err(|e| {
-            NativeErrorResponse::internal(format!("Session lookup failed: {}", e))
-        })? {
-            // Refresh TTL on activity (fire-and-forget, log errors)
-            if let Err(e) = state.session_manager.touch(conv_id).await {
-                warn!(conversation_id = %conv_id, error = %e, "Failed to refresh session TTL");
-            }
-
-            // Log tier info for debugging
-            debug!(
-                conversation_id = %conv_id,
-                session_model = %session.model,
-                requested_tier = ?requested_tier,
-                "Using session model (tier upgrade logic in Phase 4 Plan 02/03)"
-            );
-
-            (session.provider, session.model)
-        } else {
-            // Session expired or never existed - create new session
-            // Phase 4: Use tier to select model (currently hardcoded mapping)
-            // TierRouter will replace this in Plan 02/03
-            let model = tier_to_default_model(requested_tier).to_string();
-            let provider = "openai".to_string();
-
-            // Store new session
-            state.session_manager.create(conv_id, &provider, &model, &user.external_id)
-                .await
-                .map_err(|e| NativeErrorResponse::internal(format!("Session creation failed: {}", e)))?;
-
-            info!(
-                conversation_id = %conv_id,
-                model = %model,
-                tier = ?requested_tier,
-                "Created new session with tier-based model"
-            );
-            (provider, model)
-        }
-    } else {
-        // No conversation_id - fresh selection each time (stateless mode)
-        // Phase 4: Use tier to select model (currently hardcoded mapping)
-        let model = tier_to_default_model(requested_tier).to_string();
-        ("openai".to_string(), model)
-    };
+    // Resolve model selection based on session and tier
+    let selection = resolve_model_selection(&state, &native_request, requested_tier, &user)
+        .await?;
 
     let is_streaming = native_request.stream;
 
     info!(
-        model = %model,
-        provider = %provider,
+        model = %selection.model,
+        provider = %selection.provider,
+        tier = %selection.tier,
         stream = %is_streaming,
         messages = %native_request.messages.len(),
         external_id = %user.external_id,
@@ -182,10 +147,135 @@ pub async fn native_chat_completions(
         .map_err(|e| NativeErrorResponse::validation(e.to_string()))?;
 
     if is_streaming {
-        handle_streaming(state, &headers, provider_request, model, user).await
+        handle_streaming(state, &headers, provider_request, selection, user).await
     } else {
-        handle_non_streaming(state, &headers, provider_request, model, user, translator).await
+        handle_non_streaming(state, &headers, provider_request, selection, user, translator).await
     }
+}
+
+/// Resolve model selection based on session and tier
+///
+/// Handles:
+/// - Existing session lookup with tier upgrade logic
+/// - New session creation with tier routing
+/// - Stateless mode (no session)
+async fn resolve_model_selection(
+    state: &Arc<AppState>,
+    request: &ChatCompletionRequest,
+    requested_tier: Tier,
+    user: &AuthenticatedUser,
+) -> Result<ModelSelection, NativeErrorResponse> {
+    if let Some(ref conv_id) = request.conversation_id {
+        // Try to get existing session
+        if let Some(session) = state.session_manager.get(conv_id).await.map_err(|e| {
+            NativeErrorResponse::internal(format!("Session lookup failed: {}", e))
+        })? {
+            // Refresh TTL on activity (fire-and-forget, log errors)
+            if let Err(e) = state.session_manager.touch(conv_id).await {
+                warn!(conversation_id = %conv_id, error = %e, "Failed to refresh session TTL");
+            }
+
+            // Check if tier upgrade is needed
+            if session.tier.can_upgrade_to(&requested_tier) && requested_tier > session.tier {
+                // Tier upgrade: select new model for higher tier
+                let selected = state
+                    .tier_router
+                    .select_model(requested_tier, Some(&session.provider))
+                    .await
+                    .map_err(NativeErrorResponse::from_app_error)?;
+
+                // Update session with new tier/model
+                state
+                    .session_manager
+                    .upgrade_tier(conv_id, &selected.provider, &selected.model, requested_tier)
+                    .await
+                    .map_err(|e| {
+                        NativeErrorResponse::internal(format!("Session upgrade failed: {}", e))
+                    })?;
+
+                info!(
+                    conversation_id = %conv_id,
+                    old_tier = %session.tier,
+                    new_tier = %requested_tier,
+                    model = %selected.model,
+                    "Session tier upgraded"
+                );
+
+                return Ok(ModelSelection {
+                    provider: selected.provider,
+                    model: selected.model,
+                    tier: requested_tier,
+                });
+            }
+
+            // No upgrade needed - use existing session model
+            debug!(
+                conversation_id = %conv_id,
+                session_tier = %session.tier,
+                requested_tier = %requested_tier,
+                model = %session.model,
+                "Using session model (no tier upgrade)"
+            );
+
+            return Ok(ModelSelection {
+                provider: session.provider,
+                model: session.model,
+                tier: session.tier,
+            });
+        }
+
+        // Session expired or never existed - create new session
+        let selected = state
+            .tier_router
+            .select_model(requested_tier, None)
+            .await
+            .map_err(NativeErrorResponse::from_app_error)?;
+
+        // Store new session
+        state
+            .session_manager
+            .create(
+                conv_id,
+                &selected.provider,
+                &selected.model,
+                requested_tier,
+                &user.external_id,
+            )
+            .await
+            .map_err(|e| NativeErrorResponse::internal(format!("Session creation failed: {}", e)))?;
+
+        info!(
+            conversation_id = %conv_id,
+            model = %selected.model,
+            tier = %requested_tier,
+            "Created new session with tier routing"
+        );
+
+        return Ok(ModelSelection {
+            provider: selected.provider,
+            model: selected.model,
+            tier: requested_tier,
+        });
+    }
+
+    // No conversation_id - stateless mode, fresh selection each time
+    let selected = state
+        .tier_router
+        .select_model(requested_tier, None)
+        .await
+        .map_err(NativeErrorResponse::from_app_error)?;
+
+    debug!(
+        model = %selected.model,
+        tier = %requested_tier,
+        "Stateless model selection"
+    );
+
+    Ok(ModelSelection {
+        provider: selected.provider,
+        model: selected.model,
+        tier: requested_tier,
+    })
 }
 
 /// Handle non-streaming chat completion
@@ -193,21 +283,23 @@ async fn handle_non_streaming(
     state: Arc<AppState>,
     headers: &HeaderMap,
     provider_request: serde_json::Value,
-    model: String,
+    selection: ModelSelection,
     user: AuthenticatedUser,
     translator: OpenAITranslator,
 ) -> Result<Response, NativeErrorResponse> {
-    // Forward to OpenAI provider
-    let provider_response = state
-        .ai_provider
-        .chat_completions(provider_request, headers)
-        .await
-        .map_err(|e| NativeErrorResponse::provider_error(e.to_string(), "openai"))?;
-
-    // Translate response back to Native format
-    let native_response = translator
-        .translate_response(provider_response)
-        .map_err(|e| NativeErrorResponse::internal(format!("Response translation failed: {}", e)))?;
+    // Try primary request with retry on failure
+    let (native_response, final_model, _final_provider) = match execute_with_retry(
+        &state,
+        headers,
+        provider_request,
+        &selection,
+        &translator,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => return Err(e),
+    };
 
     // Track usage
     let input_tokens = native_response.usage.prompt_tokens as u64;
@@ -217,26 +309,160 @@ async fn handle_non_streaming(
         user.email.clone(),
         input_tokens,
         output_tokens,
-        Some(model.clone()),
+        Some(final_model.clone()),
     );
 
     info!(
-        model = %model,
+        model = %final_model,
         input_tokens = input_tokens,
         output_tokens = output_tokens,
         external_id = %user.external_id,
         "Native chat completion completed"
     );
 
-    Ok(Json(native_response).into_response())
+    // Build response with custom headers
+    let mut response = Json(native_response).into_response();
+    add_sentinel_headers(response.headers_mut(), &final_model, selection.tier);
+
+    Ok(response)
+}
+
+/// Execute request with single retry on provider failure
+async fn execute_with_retry(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    provider_request: serde_json::Value,
+    selection: &ModelSelection,
+    translator: &OpenAITranslator,
+) -> Result<(crate::native::response::ChatCompletionResponse, String, String), NativeErrorResponse>
+{
+    // Try primary model
+    match state
+        .ai_provider
+        .chat_completions(provider_request.clone(), headers)
+        .await
+    {
+        Ok(provider_response) => {
+            // Record success
+            state
+                .tier_router
+                .record_success(&selection.provider, &selection.model);
+
+            let native_response = translator
+                .translate_response(provider_response)
+                .map_err(|e| {
+                    NativeErrorResponse::internal(format!("Response translation failed: {}", e))
+                })?;
+
+            return Ok((
+                native_response,
+                selection.model.clone(),
+                selection.provider.clone(),
+            ));
+        }
+        Err(e) => {
+            // Record failure
+            state
+                .tier_router
+                .record_failure(&selection.provider, &selection.model);
+
+            warn!(
+                model = %selection.model,
+                provider = %selection.provider,
+                error = %e,
+                "Primary model failed, attempting retry"
+            );
+
+            // Try to get alternative model for retry
+            let retry_model = state
+                .tier_router
+                .get_retry_model(selection.tier, &selection.model)
+                .await
+                .map_err(NativeErrorResponse::from_app_error)?;
+
+            match retry_model {
+                Some(alternative) => {
+                    info!(
+                        original_model = %selection.model,
+                        retry_model = %alternative.model,
+                        "Retrying with alternative model"
+                    );
+
+                    // Retry with alternative model
+                    match state
+                        .ai_provider
+                        .chat_completions(provider_request, headers)
+                        .await
+                    {
+                        Ok(provider_response) => {
+                            state
+                                .tier_router
+                                .record_success(&alternative.provider, &alternative.model);
+
+                            let native_response = translator
+                                .translate_response(provider_response)
+                                .map_err(|e| {
+                                    NativeErrorResponse::internal(format!(
+                                        "Response translation failed: {}",
+                                        e
+                                    ))
+                                })?;
+
+                            return Ok((
+                                native_response,
+                                alternative.model.clone(),
+                                alternative.provider.clone(),
+                            ));
+                        }
+                        Err(retry_err) => {
+                            state
+                                .tier_router
+                                .record_failure(&alternative.provider, &alternative.model);
+
+                            warn!(
+                                retry_model = %alternative.model,
+                                error = %retry_err,
+                                "Retry also failed"
+                            );
+
+                            return Err(NativeErrorResponse::provider_error(
+                                format!("All models failed: {}", retry_err),
+                                &alternative.provider,
+                            ));
+                        }
+                    }
+                }
+                None => {
+                    // No alternative available
+                    return Err(NativeErrorResponse::provider_error(
+                        e.to_string(),
+                        &selection.provider,
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Add X-Sentinel-Model and X-Sentinel-Tier headers to response
+fn add_sentinel_headers(headers: &mut HeaderMap, model: &str, tier: Tier) {
+    if let Ok(value) = HeaderValue::from_str(model) {
+        headers.insert("X-Sentinel-Model", value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&tier.to_string()) {
+        headers.insert("X-Sentinel-Tier", value);
+    }
 }
 
 /// Handle streaming chat completion
+///
+/// Note: For streaming, retry is only possible BEFORE any chunks are sent.
+/// Once streaming starts, we fail fast without retry.
 async fn handle_streaming(
     state: Arc<AppState>,
     headers: &HeaderMap,
     mut provider_request: serde_json::Value,
-    model: String,
+    selection: ModelSelection,
     user: AuthenticatedUser,
 ) -> Result<Response, NativeErrorResponse> {
     // Inject stream_options.include_usage: true to get token counts from OpenAI
@@ -246,14 +472,39 @@ async fn handle_streaming(
     });
 
     // Forward streaming request to provider
-    let stream = state
+    // Note: No retry after streaming starts - would cause duplicate partial responses
+    let stream = match state
         .ai_provider
-        .chat_completions_stream(provider_request, headers)
+        .chat_completions_stream(provider_request.clone(), headers)
         .await
-        .map_err(|e| NativeErrorResponse::provider_error(e.to_string(), "openai"))?;
+    {
+        Ok(stream) => {
+            state
+                .tier_router
+                .record_success(&selection.provider, &selection.model);
+            stream
+        }
+        Err(e) => {
+            state
+                .tier_router
+                .record_failure(&selection.provider, &selection.model);
+
+            warn!(
+                model = %selection.model,
+                provider = %selection.provider,
+                error = %e,
+                "Streaming request failed (no retry for streaming)"
+            );
+
+            return Err(NativeErrorResponse::provider_error(
+                e.to_string(),
+                &selection.provider,
+            ));
+        }
+    };
 
     // Clone values for the stream closure
-    let model_clone = model.clone();
+    let model_clone = selection.model.clone();
     let tracker = state.batching_tracker.clone();
     let user_email = user.email.clone();
     let token_counter = state.token_counter.clone();
@@ -271,7 +522,7 @@ async fn handle_streaming(
     let line_buffer_for_stream = line_buffer.clone();
 
     // Clone model for metrics in stream closure
-    let model_for_parse_error = model.clone();
+    let model_for_parse_error = selection.model.clone();
 
     // Wrap the stream to extract content and usage from chunks
     // Since our Native API format is OpenAI-compatible, chunks pass through with minimal transformation
@@ -325,8 +576,8 @@ async fn handle_streaming(
 
     // Create a stream that tracks usage after completion
     let user_email_final = user_email.clone();
-    let model_for_metrics = model.clone();
-    let model_for_counting = model.clone();
+    let model_for_metrics = selection.model.clone();
+    let model_for_counting = selection.model.clone();
     let usage_final = usage_accumulator.clone();
     let content_final = content_accumulator.clone();
     let tracker_final = tracker.clone();
@@ -376,7 +627,7 @@ async fn handle_streaming(
         );
     };
 
-    // Build SSE response
+    // Build SSE response with custom headers
     let body = Body::from_stream(final_stream);
 
     let response = Response::builder()
@@ -385,11 +636,14 @@ async fn handle_streaming(
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .header("X-Accel-Buffering", "no")
+        .header("X-Sentinel-Model", &selection.model)
+        .header("X-Sentinel-Tier", selection.tier.to_string())
         .body(body)
         .map_err(|e| NativeErrorResponse::internal(format!("Failed to build response: {}", e)))?;
 
     info!(
-        model = %model,
+        model = %selection.model,
+        tier = %selection.tier,
         external_id = %user.external_id,
         "Native streaming chat started"
     );
