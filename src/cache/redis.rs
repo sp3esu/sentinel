@@ -145,6 +145,11 @@ pub mod keys {
     pub fn session(conversation_id: &str) -> String {
         format!("sentinel:session:{}", conversation_id)
     }
+
+    /// Tier configuration cache key (global, not per-user)
+    pub fn tier_config() -> &'static str {
+        "sentinel:tiers:config"
+    }
 }
 
 #[cfg(test)]
@@ -312,6 +317,25 @@ mod tests {
         // Unicode characters in IDs
         let key = keys::user_limits("user_unicode");
         assert_eq!(key, "sentinel:limits:user_unicode");
+    }
+
+    // ===========================================
+    // Tier Config Key Tests
+    // ===========================================
+
+    #[test]
+    fn test_tier_config_key_format() {
+        let key = keys::tier_config();
+        assert_eq!(key, "sentinel:tiers:config");
+    }
+
+    #[test]
+    fn test_tier_config_key_is_static() {
+        // Key is constant (global config, not per-user)
+        let key1 = keys::tier_config();
+        let key2 = keys::tier_config();
+        assert_eq!(key1, key2);
+        assert!(std::ptr::eq(key1, key2)); // Same memory location (static)
     }
 
     // ===========================================

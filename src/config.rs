@@ -34,6 +34,9 @@ pub struct Config {
     /// Session TTL for provider stickiness (in seconds, default: 24 hours)
     pub session_ttl_seconds: u64,
 
+    /// Cache TTL for tier configuration (in seconds, default: 30 minutes)
+    pub tier_config_ttl_seconds: u64,
+
     /// Enable debug endpoints (development only)
     pub debug_enabled: bool,
 }
@@ -72,6 +75,11 @@ impl Config {
                 .unwrap_or_else(|_| "86400".to_string())
                 .parse()
                 .context("Invalid SESSION_TTL_SECONDS")?,
+
+            tier_config_ttl_seconds: env::var("TIER_CONFIG_TTL_SECONDS")
+                .unwrap_or_else(|_| "1800".to_string())
+                .parse()
+                .context("Invalid TIER_CONFIG_TTL_SECONDS")?,
 
             debug_enabled: env::var("SENTINEL_DEBUG")
                 .map(|v| v == "true" || v == "1")
@@ -114,6 +122,23 @@ mod tests {
         // Default session TTL is 24 hours (86400 seconds)
         assert_eq!(config.session_ttl_seconds, 86400);
         assert_eq!(config.session_ttl_seconds, 24 * 60 * 60);
+
+        // Clean up
+        env::remove_var("ZION_API_URL");
+        env::remove_var("ZION_API_KEY");
+    }
+
+    #[test]
+    fn test_tier_config_ttl_default() {
+        // Set required env vars
+        env::set_var("ZION_API_URL", "http://localhost:3000");
+        env::set_var("ZION_API_KEY", "test-key");
+
+        let config = Config::from_env().unwrap();
+
+        // Default tier config TTL is 30 minutes (1800 seconds)
+        assert_eq!(config.tier_config_ttl_seconds, 1800);
+        assert_eq!(config.tier_config_ttl_seconds, 30 * 60);
 
         // Clean up
         env::remove_var("ZION_API_URL");
