@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-01-31)
 ## Current Position
 
 Phase: 6 of 6 (Documentation)
-Plan: 0 of 2 in current phase
-Status: Ready to plan
-Last activity: 2026-02-01 - Phase 5 complete, verified
+Plan: 1 of 2 in current phase
+Status: In progress
+Last activity: 2026-02-01 - Completed 06-01-PLAN.md (OpenAPI specification)
 
-Progress: [=================== ] 95%
+Progress: [====================] 97%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 15
+- Total plans completed: 16
 - Average duration: 6 min
-- Total execution time: 92 min
+- Total execution time: 101 min
 
 **By Phase:**
 
@@ -32,10 +32,11 @@ Progress: [=================== ] 95%
 | 03-session-management | 2 | 12 min | 6 min |
 | 04-tier-routing | 4 | 29 min | 7 min |
 | 05-tool-calling | 3 | 25 min | 8 min |
+| 06-documentation | 1 | 9 min | 9 min |
 
 **Recent Trend:**
-- Last 5 plans: 04-03 (12min), 05-01 (7min), 05-02 (11min), 05-03 (7min)
-- Trend: Steady at 7-12 min
+- Last 5 plans: 05-01 (7min), 05-02 (11min), 05-03 (7min), 06-01 (9min)
+- Trend: Steady at 7-11 min
 
 *Updated after each plan completion*
 
@@ -90,6 +91,9 @@ Recent decisions affecting current work:
 | Streaming uses provider IDs | 05-03 | V1 limitation - ID translation would require buffering stream |
 | Handler discards mapping | 05-03 | Tool results use history lookup, no persistence needed |
 | Accumulator sorts by index | 05-03 | Maintains order when deltas arrive interleaved |
+| Use schema(as) for custom serde | 06-01 | ToolChoice/ToolResultContent use serde_json::Value representation |
+| Schema examples at struct level | 06-01 | utoipa 5.x doesn't support variant-level examples on enums |
+| SecurityAddon modifier pattern | 06-01 | Extensible security scheme definition via Modify trait |
 
 ### Pending Todos
 
@@ -102,5 +106,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-01
-Stopped at: Phase 5 complete, ready for Phase 6
-Resume file: N/A (phase boundary)
+Stopped at: Completed 06-01-PLAN.md
+Resume file: .planning/phases/06-documentation/06-02-PLAN.md
