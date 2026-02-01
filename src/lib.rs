@@ -51,6 +51,12 @@ pub struct AppState {
     pub token_counter: SharedTokenCounter,
     /// Session manager for conversation-based provider stickiness
     pub session_manager: Arc<SessionManager>,
+    /// Tier configuration cache for model routing
+    pub tier_config_cache: Arc<TierConfigCache>,
+    /// Provider health tracker for availability monitoring
+    pub health_tracker: Arc<ProviderHealthTracker>,
+    /// Tier router for model selection
+    pub tier_router: Arc<TierRouter>,
 }
 
 impl AppState {
@@ -82,8 +88,24 @@ impl AppState {
 
         // Initialize session manager for provider stickiness
         let session_manager = Arc::new(SessionManager::new(
-            redis_cache,
+            redis_cache.clone(),
             config.session_ttl_seconds,
+        ));
+
+        // Initialize tier configuration cache
+        let tier_config_cache = Arc::new(TierConfigCache::new(
+            redis_cache,
+            zion_client.clone(),
+            config.tier_config_ttl_seconds,
+        ));
+
+        // Initialize provider health tracker
+        let health_tracker = Arc::new(ProviderHealthTracker::new());
+
+        // Initialize tier router
+        let tier_router = Arc::new(TierRouter::new(
+            tier_config_cache.clone(),
+            health_tracker.clone(),
         ));
 
         // Initialize usage tracker (synchronous, for streaming)
@@ -118,6 +140,9 @@ impl AppState {
             ai_provider,
             token_counter,
             session_manager,
+            tier_config_cache,
+            health_tracker,
+            tier_router,
         })
     }
 
@@ -154,8 +179,22 @@ impl AppState {
 
         // Create session manager with in-memory backend for testing
         let session_manager = Arc::new(SessionManager::new_for_testing(
-            in_memory_cache,
+            in_memory_cache.clone(),
             config.session_ttl_seconds,
+        ));
+
+        // Create tier config cache with in-memory backend for testing
+        let tier_config_cache = Arc::new(TierConfigCache::new_for_testing(
+            in_memory_cache,
+            zion_client.clone(),
+            60, // 1 minute TTL for tests
+        ));
+
+        let health_tracker = Arc::new(ProviderHealthTracker::new());
+
+        let tier_router = Arc::new(TierRouter::new(
+            tier_config_cache.clone(),
+            health_tracker.clone(),
         ));
 
         Self {
@@ -170,6 +209,9 @@ impl AppState {
             ai_provider,
             token_counter,
             session_manager,
+            tier_config_cache,
+            health_tracker,
+            tier_router,
         }
     }
 }
