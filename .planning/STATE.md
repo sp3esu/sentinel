@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-01-31)
 ## Current Position
 
 Phase: 5 of 6 (Tool Calling)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-02-01 - Phase 4 complete, verified
+Plan: 1 of 3 in current phase
+Status: In progress
+Last activity: 2026-02-01 - Completed 05-01-PLAN.md (Tool Calling Types)
 
-Progress: [===============     ] 75%
+Progress: [================    ] 81%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 12
+- Total plans completed: 13
 - Average duration: 6 min
-- Total execution time: 67 min
+- Total execution time: 74 min
 
 **By Phase:**
 
@@ -31,9 +31,10 @@ Progress: [===============     ] 75%
 | 02-api-endpoints | 2 | 7 min | 4 min |
 | 03-session-management | 2 | 12 min | 6 min |
 | 04-tier-routing | 4 | 29 min | 7 min |
+| 05-tool-calling | 1 | 7 min | 7 min |
 
 **Recent Trend:**
-- Last 5 plans: 04-01 (6min), 04-01b (5min), 04-02 (6min), 04-03 (12min)
+- Last 5 plans: 04-01b (5min), 04-02 (6min), 04-03 (12min), 05-01 (7min)
 - Trend: Steady at 5-12 min
 
 *Updated after each plan completion*
@@ -78,6 +79,10 @@ Recent decisions affecting current work:
 | weight = 1/relative_cost | 04-02 | Simple inverse weighting favors cheaper models |
 | Preferred provider first | 04-02 | Session continuity takes precedence over cost |
 | Fail explicit when Zion unavailable | 04-03 | Return 503, don't use hardcoded fallback per decisions |
+| ToolResultContent as untagged enum | 05-01 | Text serializes as string, Json as object |
+| Custom serde for ToolChoice | 05-01 | String variants plus object for function selection |
+| Arguments as parsed JSON | 05-01 | serde_json::Value not string for ergonomics |
+| ToolCallDelta index field | 05-01 | Critical for streaming accumulation of parallel tool calls |
 
 ### Pending Todos
 
@@ -90,5 +95,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-01
-Stopped at: Phase 4 complete, ready for Phase 5
-Resume file: N/A (phase boundary)
+Stopped at: Completed 05-01-PLAN.md (Tool Calling Types)
+Resume file: None
