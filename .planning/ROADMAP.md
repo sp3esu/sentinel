@@ -15,7 +15,7 @@ This roadmap delivers a provider-agnostic LLM API layer for Mindsmith. Starting 
 - [x] **Phase 3: Session Management** - Track conversations with provider stickiness
 - [x] **Phase 4: Tier Routing** - Map complexity tiers to models with config from Zion
 - [x] **Phase 5: Tool Calling** - Unified tool format with schema translation
-- [ ] **Phase 6: Documentation** - OpenAPI spec with protected docs endpoint
+- [x] **Phase 6: Documentation** - OpenAPI spec with protected docs endpoint
 
 ## Phase Details
 
@@ -115,8 +115,8 @@ Plans:
 **Plans**: 2 plans in 2 waves
 
 Plans:
-- [ ] 06-01-PLAN.md - OpenAPI spec generation with utoipa (Wave 1)
-- [ ] 06-02-PLAN.md - Docs endpoint with API key protection (Wave 2)
+- [x] 06-01-PLAN.md - OpenAPI spec generation with utoipa (Wave 1)
+- [x] 06-02-PLAN.md - Docs endpoint with API key protection (Wave 2)
 
 ## Progress
 
@@ -130,7 +130,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 3. Session Management | 2/2 | Complete | 2026-02-01 |
 | 4. Tier Routing | 4/4 | Complete | 2026-02-01 |
 | 5. Tool Calling | 3/3 | Complete | 2026-02-01 |
-| 6. Documentation | 0/2 | Not started | - |
+| 6. Documentation | 2/2 | Complete | 2026-02-01 |
 
 ---
 *Roadmap created: 2026-01-31*

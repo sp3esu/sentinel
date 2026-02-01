@@ -55,10 +55,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### OpenAPI Documentation
 
-- [ ] **DOCS-01**: OpenAPI 3.x specification for Native API
-- [ ] **DOCS-02**: GET /native/docs returns OpenAPI spec
-- [ ] **DOCS-03**: Docs endpoint protected by dedicated API key
-- [ ] **DOCS-04**: Spec includes all request/response schemas
+- [x] **DOCS-01**: OpenAPI 3.x specification for Native API
+- [x] **DOCS-02**: GET /native/docs returns OpenAPI spec
+- [x] **DOCS-03**: Docs endpoint protected by dedicated API key
+- [x] **DOCS-04**: Spec includes all request/response schemas
 
 ## v2 Requirements
 
@@ -129,10 +129,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | API-02 | Phase 2 | Complete |
 | API-03 | Phase 2 | Complete |
 | API-04 | Phase 2 | Complete |
-| DOCS-01 | Phase 6 | Pending |
-| DOCS-02 | Phase 6 | Pending |
-| DOCS-03 | Phase 6 | Pending |
-| DOCS-04 | Phase 6 | Pending |
+| DOCS-01 | Phase 6 | Complete |
+| DOCS-02 | Phase 6 | Complete |
+| DOCS-03 | Phase 6 | Complete |
+| DOCS-04 | Phase 6 | Complete |
 
 **Coverage:**
 - v1 requirements: 32 total
@@ -141,4 +141,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-01-31*
-*Last updated: 2026-01-31 after roadmap creation*
+*Last updated: 2026-02-01 after Phase 6 completion*
