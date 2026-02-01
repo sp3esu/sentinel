@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-01-31)
 
 **Core value:** Mindsmith can build and chat with assistants using any LLM provider through a single, stable API
-**Current focus:** Phase 5 - Tool Calling
+**Current focus:** Phase 5 - Tool Calling (Complete)
 
 ## Current Position
 
 Phase: 5 of 6 (Tool Calling)
-Plan: 2 of 3 in current phase
-Status: In progress
-Last activity: 2026-02-01 - Completed 05-02-PLAN.md (OpenAI Tool Translation)
+Plan: 3 of 3 in current phase
+Status: Phase complete
+Last activity: 2026-02-01 - Completed 05-03-PLAN.md (Streaming Accumulation and Integration)
 
-Progress: [=================   ] 87%
+Progress: [=================== ] 93%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 14
+- Total plans completed: 15
 - Average duration: 6 min
-- Total execution time: 85 min
+- Total execution time: 92 min
 
 **By Phase:**
 
@@ -31,11 +31,11 @@ Progress: [=================   ] 87%
 | 02-api-endpoints | 2 | 7 min | 4 min |
 | 03-session-management | 2 | 12 min | 6 min |
 | 04-tier-routing | 4 | 29 min | 7 min |
-| 05-tool-calling | 2 | 18 min | 9 min |
+| 05-tool-calling | 3 | 25 min | 8 min |
 
 **Recent Trend:**
-- Last 5 plans: 04-02 (6min), 04-03 (12min), 05-01 (7min), 05-02 (11min)
-- Trend: Steady at 6-12 min
+- Last 5 plans: 04-03 (12min), 05-01 (7min), 05-02 (11min), 05-03 (7min)
+- Trend: Steady at 7-12 min
 
 *Updated after each plan completion*
 
@@ -87,6 +87,9 @@ Recent decisions affecting current work:
 | Parse arguments to JSON object | 05-02 | More ergonomic than string, catch malformed JSON early |
 | History lookup for function names | 05-02 | Tool results look up name from assistant message tool_calls |
 | Tuple return (response, mapping) | 05-02 | translate_response returns ID mapping for tool results |
+| Streaming uses provider IDs | 05-03 | V1 limitation - ID translation would require buffering stream |
+| Handler discards mapping | 05-03 | Tool results use history lookup, no persistence needed |
+| Accumulator sorts by index | 05-03 | Maintains order when deltas arrive interleaved |
 
 ### Pending Todos
 
@@ -99,5 +102,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-01
-Stopped at: Completed 05-02-PLAN.md (OpenAI Tool Translation)
+Stopped at: Completed 05-03-PLAN.md (Streaming Accumulation and Integration)
 Resume file: None
