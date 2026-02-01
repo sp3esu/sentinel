@@ -29,6 +29,16 @@ use crate::{
     AppState,
 };
 
+// Note: These types are imported for documentation/future use.
+// - ToolCallAccumulator: For future streaming tool call ID translation
+//   (v1 streaming passes through provider IDs as documented limitation)
+// - ToolCallIdMapping: Used internally by translate_response, will be used
+//   for streaming ID translation in future versions
+#[allow(unused_imports)]
+use crate::native::streaming::ToolCallAccumulator;
+#[allow(unused_imports)]
+use crate::native::translate::ToolCallIdMapping;
+
 /// Usage statistics from stream chunks
 #[derive(Debug, Clone, serde::Deserialize, Default)]
 struct StreamUsage {
@@ -311,6 +321,17 @@ async fn handle_non_streaming(
         output_tokens,
         Some(final_model.clone()),
     );
+
+    // Log tool calls if present
+    if let Some(ref choice) = native_response.choices.first() {
+        if let Some(ref tool_calls) = choice.message.tool_calls {
+            debug!(
+                tool_count = tool_calls.len(),
+                external_id = %user.external_id,
+                "Response contains tool calls"
+            );
+        }
+    }
 
     info!(
         model = %final_model,
