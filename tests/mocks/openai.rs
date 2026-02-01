@@ -143,6 +143,84 @@ impl MockOpenAI {
         self.mock_chat_completion_success(response).await;
     }
 
+    /// Mock chat completion response with tool_calls
+    pub async fn mock_chat_completion_with_tool_calls(
+        &self,
+        function_name: &str,
+        arguments: &str,
+        tool_call_id: &str,
+    ) {
+        let response = ChatCompletionResponseMock {
+            id: generate_id("chatcmpl"),
+            object: "chat.completion".to_string(),
+            created: current_timestamp(),
+            model: "gpt-4".to_string(),
+            choices: vec![ChatChoiceMock {
+                index: 0,
+                message: ChatMessageMock {
+                    role: "assistant".to_string(),
+                    content: None,
+                    function_call: None,
+                    tool_calls: Some(vec![ToolCallMock {
+                        id: tool_call_id.to_string(),
+                        call_type: "function".to_string(),
+                        function: FunctionCallMock {
+                            name: function_name.to_string(),
+                            arguments: arguments.to_string(),
+                        },
+                    }]),
+                },
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+            usage: Some(UsageMock {
+                prompt_tokens: 50,
+                completion_tokens: 20,
+                total_tokens: 70,
+            }),
+        };
+
+        self.mock_chat_completion_success(response).await;
+    }
+
+    /// Mock chat completion response with multiple parallel tool_calls
+    pub async fn mock_chat_completion_with_parallel_tool_calls(&self, tool_calls: Vec<(String, String, String)>) {
+        let mock_tool_calls: Vec<ToolCallMock> = tool_calls
+            .iter()
+            .map(|(name, args, id)| ToolCallMock {
+                id: id.clone(),
+                call_type: "function".to_string(),
+                function: FunctionCallMock {
+                    name: name.clone(),
+                    arguments: args.clone(),
+                },
+            })
+            .collect();
+
+        let response = ChatCompletionResponseMock {
+            id: generate_id("chatcmpl"),
+            object: "chat.completion".to_string(),
+            created: current_timestamp(),
+            model: "gpt-4".to_string(),
+            choices: vec![ChatChoiceMock {
+                index: 0,
+                message: ChatMessageMock {
+                    role: "assistant".to_string(),
+                    content: None,
+                    function_call: None,
+                    tool_calls: Some(mock_tool_calls),
+                },
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+            usage: Some(UsageMock {
+                prompt_tokens: 80,
+                completion_tokens: 40,
+                total_tokens: 120,
+            }),
+        };
+
+        self.mock_chat_completion_success(response).await;
+    }
+
     /// Mock 401 Unauthorized for chat completions
     pub async fn mock_chat_completion_unauthorized(&self) {
         let response = OpenAIErrorResponseMock {

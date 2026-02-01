@@ -947,3 +947,513 @@ async fn test_session_tier_upgrade() {
     let body: serde_json::Value = response2.json();
     assert!(body.get("choices").is_some());
 }
+
+// =============================================================================
+// Tool Calling Tests
+// =============================================================================
+
+/// Test sending a request with tools array
+#[tokio::test]
+async fn test_native_chat_with_tools_request() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up mocks
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("I can help with the weather!", 20, 10)
+        .await;
+
+    // Send request with tools
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [
+                {"role": "user", "content": "What's the weather?"}
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get current weather for a location",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "location": {"type": "string", "description": "City name"}
+                            },
+                            "required": ["location"]
+                        }
+                    }
+                }
+            ]
+        }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert!(body.get("choices").is_some());
+}
+
+/// Test receiving a response with tool_calls from the model
+#[tokio::test]
+async fn test_native_chat_tool_call_response() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up mocks
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+
+    // Mock response with tool_calls
+    harness
+        .openai
+        .mock_chat_completion_with_tool_calls(
+            "get_weather",
+            r#"{"location": "Boston"}"#,
+            "call_provider_abc123",
+        )
+        .await;
+
+    // Send request
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [
+                {"role": "user", "content": "What's the weather in Boston?"}
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get the current weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "location": {"type": "string"}
+                            },
+                            "required": ["location"]
+                        }
+                    }
+                }
+            ]
+        }))
+        .await;
+
+    response.assert_status_ok();
+
+    let body: serde_json::Value = response.json();
+    let choices = body.get("choices").unwrap().as_array().unwrap();
+    assert_eq!(choices.len(), 1);
+
+    // Check finish_reason is "tool_calls"
+    assert_eq!(
+        choices[0].get("finish_reason").unwrap().as_str().unwrap(),
+        "tool_calls"
+    );
+
+    // Check tool_calls are present
+    let message = choices[0].get("message").unwrap();
+    let tool_calls = message.get("tool_calls").unwrap().as_array().unwrap();
+    assert_eq!(tool_calls.len(), 1);
+
+    // Verify tool call structure
+    let tool_call = &tool_calls[0];
+    // Should have Sentinel ID format (call_uuid)
+    let id = tool_call.get("id").unwrap().as_str().unwrap();
+    assert!(id.starts_with("call_"), "Tool call ID should start with 'call_'");
+
+    assert_eq!(tool_call.get("type").unwrap().as_str().unwrap(), "function");
+
+    let function = tool_call.get("function").unwrap();
+    assert_eq!(function.get("name").unwrap().as_str().unwrap(), "get_weather");
+
+    // Arguments should be parsed JSON, not a string
+    let arguments = function.get("arguments").unwrap();
+    assert!(arguments.is_object(), "Arguments should be a JSON object");
+    assert_eq!(arguments.get("location").unwrap().as_str().unwrap(), "Boston");
+}
+
+/// Test submitting tool results with history lookup for function name
+#[tokio::test]
+async fn test_native_chat_tool_result_submission() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up mocks
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("The weather in Boston is sunny and 72F.", 30, 15)
+        .await;
+
+    // Send request with tool result in history
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [
+                {"role": "user", "content": "What's the weather in Boston?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": {"location": "Boston"}
+                        }
+                    }]
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_abc123",
+                    "content": "Sunny, 72F"
+                }
+            ]
+        }))
+        .await;
+
+    response.assert_status_ok();
+
+    let body: serde_json::Value = response.json();
+    let choices = body.get("choices").unwrap().as_array().unwrap();
+    assert_eq!(choices.len(), 1);
+    assert!(
+        choices[0].get("message").unwrap().get("content").is_some(),
+        "Response should have content after tool result"
+    );
+}
+
+/// Test validation: invalid tool name (hyphen not allowed)
+#[tokio::test]
+async fn test_native_chat_invalid_tool_name() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up auth mocks
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+
+    // Send request with invalid tool name (contains hyphen)
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [
+                {"role": "user", "content": "Hello"}
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get-weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object"}
+                    }
+                }
+            ]
+        }))
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json();
+    let error = body.get("error").expect("Should have error field");
+    let message = error.get("message").unwrap().as_str().unwrap();
+    assert!(
+        message.contains("get-weather") || message.contains("Invalid"),
+        "Error should mention invalid tool name"
+    );
+}
+
+/// Test validation: empty tool description
+#[tokio::test]
+async fn test_native_chat_empty_tool_description() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up auth mocks
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+
+    // Send request with empty description
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [
+                {"role": "user", "content": "Hello"}
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "my_tool",
+                        "description": "",
+                        "parameters": {"type": "object"}
+                    }
+                }
+            ]
+        }))
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json();
+    let error = body.get("error").expect("Should have error field");
+    let message = error.get("message").unwrap().as_str().unwrap();
+    assert!(
+        message.contains("empty description") || message.contains("description"),
+        "Error should mention empty description"
+    );
+}
+
+/// Test tool_choice variants (auto, none, required, specific function)
+#[tokio::test]
+async fn test_native_chat_tool_choice_variants() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Test tool_choice: "auto"
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("Using auto tool choice", 10, 10)
+        .await;
+
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "my_tool",
+                    "description": "A tool",
+                    "parameters": {"type": "object"}
+                }
+            }],
+            "tool_choice": "auto"
+        }))
+        .await;
+
+    response.assert_status_ok();
+
+    // Test tool_choice: "none"
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_usage("Not using tools", 10, 10)
+        .await;
+
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "my_tool",
+                    "description": "A tool",
+                    "parameters": {"type": "object"}
+                }
+            }],
+            "tool_choice": "none"
+        }))
+        .await;
+
+    response.assert_status_ok();
+
+    // Test tool_choice: "required"
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_tool_calls("my_tool", "{}", "call_xyz")
+        .await;
+
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "my_tool",
+                    "description": "A tool",
+                    "parameters": {"type": "object"}
+                }
+            }],
+            "tool_choice": "required"
+        }))
+        .await;
+
+    response.assert_status_ok();
+
+    // Test tool_choice: specific function
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+    harness.zion.mock_batch_increment_success(1, 0).await;
+    harness
+        .openai
+        .mock_chat_completion_with_tool_calls("specific_tool", "{}", "call_specific")
+        .await;
+
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "specific_tool",
+                    "description": "A specific tool",
+                    "parameters": {"type": "object"}
+                }
+            }],
+            "tool_choice": {"type": "function", "function": {"name": "specific_tool"}}
+        }))
+        .await;
+
+    response.assert_status_ok();
+}
+
+/// Test error when tool result references non-existent tool_call in history
+#[tokio::test]
+async fn test_native_chat_tool_result_missing_history() {
+    let harness = TokenTrackingTestHarness::new().await;
+
+    // Set up auth mocks
+    harness
+        .zion
+        .mock_get_user_profile_success(make_test_profile())
+        .await;
+    harness
+        .zion
+        .mock_get_limits_success(constants::TEST_EXTERNAL_ID, ZionTestData::free_tier_limits())
+        .await;
+    harness.zion.mock_tier_config_success().await;
+
+    // Send request with tool result but no matching tool_call in history
+    let response = harness
+        .server
+        .post("/native/v1/chat/completions")
+        .add_header(header::AUTHORIZATION, auth_header().parse().unwrap())
+        .add_header(header::CONTENT_TYPE, "application/json".parse().unwrap())
+        .json(&json!({
+            "messages": [
+                {"role": "user", "content": "What's the weather?"},
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_nonexistent",
+                    "content": "Some result"
+                }
+            ]
+        }))
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let body: serde_json::Value = response.json();
+    let error = body.get("error").expect("Should have error field");
+    let message = error.get("message").unwrap().as_str().unwrap();
+    assert!(
+        message.contains("call_nonexistent") || message.contains("not found") || message.contains("No tool call"),
+        "Error should indicate missing tool call in history"
+    );
+}
