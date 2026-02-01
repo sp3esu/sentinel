@@ -10,18 +10,18 @@ See: .planning/PROJECT.md (updated 2026-01-31)
 ## Current Position
 
 Phase: 4 of 6 (Tier Routing)
-Plan: 2 of 4 in current phase (01 and 01b complete)
+Plan: 3 of 4 in current phase (01, 01b, 02 complete)
 Status: In progress
-Last activity: 2026-02-01 - Completed 04-01b-PLAN.md (Zion Tier Config)
+Last activity: 2026-02-01 - Completed 04-02-PLAN.md (Model Selection Logic)
 
-Progress: [============        ] 60%
+Progress: [=============       ] 65%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 10
+- Total plans completed: 11
 - Average duration: 5 min
-- Total execution time: 49 min
+- Total execution time: 55 min
 
 **By Phase:**
 
@@ -30,11 +30,11 @@ Progress: [============        ] 60%
 | 01-types-and-translation | 4 | 19 min | 5 min |
 | 02-api-endpoints | 2 | 7 min | 4 min |
 | 03-session-management | 2 | 12 min | 6 min |
-| 04-tier-routing | 2 | 11 min | 6 min |
+| 04-tier-routing | 3 | 17 min | 6 min |
 
 **Recent Trend:**
-- Last 5 plans: 03-01 (4min), 03-02 (8min), 04-01 (6min), 04-01b (5min)
-- Trend: Steady at 4-8 min
+- Last 5 plans: 03-02 (8min), 04-01 (6min), 04-01b (5min), 04-02 (6min)
+- Trend: Steady at 5-8 min
 
 *Updated after each plan completion*
 
@@ -75,6 +75,8 @@ Recent decisions affecting current work:
 | 30-minute tier config TTL | 04-01b | Balance between freshness and Zion API load |
 | Cost-weighted selection | 04-02 | Probabilistic selection favors cheaper models |
 | Exponential backoff for health | 04-02 | 30s initial, 2x multiplier, 5min max per decisions |
+| weight = 1/relative_cost | 04-02 | Simple inverse weighting favors cheaper models |
+| Preferred provider first | 04-02 | Session continuity takes precedence over cost |
 | Fail explicit when Zion unavailable | 04-03 | Return 503, don't use hardcoded fallback per decisions |
 
 ### Pending Todos
@@ -88,5 +90,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-01
-Stopped at: Completed 04-01b-PLAN.md (Zion Tier Config)
-Resume file: .planning/phases/04-tier-routing/04-02-PLAN.md
+Stopped at: Completed 04-02-PLAN.md (Model Selection Logic)
+Resume file: .planning/phases/04-tier-routing/04-03-PLAN.md
